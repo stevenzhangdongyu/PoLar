@@ -73,15 +73,14 @@ def read_json_or_jsonl(path: str) -> List[Dict[str, Any]]:
     return data
 
 
-def load_hf_dataset(dataset_name: str, split: str, limit: Optional[int]) -> List[Dict[str, Any]]:
+def load_hf_dataset(dataset_name: str, split: str) -> List[Dict[str, Any]]:
     try:
         import datasets
     except ImportError as exc:
         raise ImportError("Install `datasets` to use --hf_dataset, or pass --input_json instead.") from exc
 
     ds = datasets.load_dataset(dataset_name, split=split, trust_remote_code=True)
-    rows = list(ds)
-    return rows[:limit] if limit is not None else rows
+    return list(ds)
 
 
 def get_field(row: Dict[str, Any], names: Iterable[str]) -> str:
@@ -97,6 +96,50 @@ def get_field(row: Dict[str, Any], names: Iterable[str]) -> str:
         if ok and cur is not None:
             return str(cur)
     return ""
+
+
+def get_nested_value(row: Dict[str, Any], field: str) -> Any:
+    cur: Any = row
+    for part in field.split("."):
+        if isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+        else:
+            return None
+    return cur
+
+
+def print_field_summary(rows: List[Dict[str, Any]], max_examples: int = 3) -> None:
+    if not rows:
+        print("[fields] dataset is empty")
+        return
+    print("[fields] top-level fields:")
+    for key in sorted(rows[0].keys()):
+        value = rows[0].get(key)
+        print(f"  - {key}: {type(value).__name__}")
+    for idx, row in enumerate(rows[:max_examples]):
+        print(f"\n[example {idx}]")
+        print(json.dumps(row, indent=2, ensure_ascii=False)[:4000])
+
+
+def filter_by_difficulty(
+    rows: List[Dict[str, Any]],
+    *,
+    difficulty: Optional[int],
+    difficulty_field: str,
+) -> List[Dict[str, Any]]:
+    if difficulty is None:
+        return rows
+
+    kept: List[Dict[str, Any]] = []
+    for row in rows:
+        value = get_nested_value(row, difficulty_field)
+        try:
+            level = int(value)
+        except (TypeError, ValueError):
+            continue
+        if level == int(difficulty):
+            kept.append(row)
+    return kept
 
 
 def normalize_samples(
@@ -323,6 +366,8 @@ def save_output(path: str, samples: List[Dict[str, Any]], args: argparse.Namespa
             "generator": "scripts/generate_mcts_samples.py",
             "model_path": args.model_path,
             "original_depth": args.original_depth,
+            "difficulty": args.difficulty,
+            "difficulty_field": args.difficulty_field,
             "note": "MCTS-style supervision generated locally; not the authors' released/private traces.",
         },
         "samples": samples,
@@ -340,8 +385,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input_json", default=None, help="JSON/JSONL samples with question/answer fields.")
     parser.add_argument("--hf_dataset", default=None, help="Optional HuggingFace dataset name.")
     parser.add_argument("--hf_split", default="train", help="HuggingFace split when --hf_dataset is used.")
-    parser.add_argument("--question_field", default="question")
+    parser.add_argument("--question_field", default="query")
     parser.add_argument("--answer_field", default="gt_ans")
+    parser.add_argument("--difficulty", type=int, choices=[1, 2, 3, 4, 5], default=None, help="Filter samples by difficulty level before slicing.")
+    parser.add_argument("--difficulty_field", default="query_metadata.level", help="Nested field used for --difficulty filtering.")
+    parser.add_argument("--print_fields", action="store_true", help="Print dataset fields/examples and exit before loading the model.")
     parser.add_argument("--start_idx", type=int, default=0)
     parser.add_argument("--limit", type=int, default=10, help="Number of input samples to process.")
     parser.add_argument("--simulations", type=int, default=64, help="MCTS simulations per sample.")
@@ -368,9 +416,25 @@ def main() -> None:
     if args.input_json:
         rows = read_json_or_jsonl(args.input_json)
     elif args.hf_dataset:
-        rows = load_hf_dataset(args.hf_dataset, args.hf_split, args.start_idx + args.limit if args.limit else None)
+        rows = load_hf_dataset(args.hf_dataset, args.hf_split)
     else:
         raise ValueError("Provide either --input_json or --hf_dataset.")
+
+    if args.print_fields:
+        print_field_summary(rows)
+        return
+
+    raw_count = len(rows)
+    rows = filter_by_difficulty(
+        rows,
+        difficulty=args.difficulty,
+        difficulty_field=args.difficulty_field,
+    )
+    if args.difficulty is not None:
+        print(
+            f"[filter] difficulty={args.difficulty} via {args.difficulty_field}: "
+            f"{len(rows)}/{raw_count} rows kept"
+        )
 
     samples = normalize_samples(
         rows,
