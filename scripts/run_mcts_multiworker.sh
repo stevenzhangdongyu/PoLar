@@ -56,6 +56,7 @@ MAX_CHILDREN_PER_EXPAND="${MAX_CHILDREN_PER_EXPAND:-64}"
 MAX_PATH_LEN_RATIO="${MAX_PATH_LEN_RATIO:-1.15}"
 LENGTH_PENALTY="${LENGTH_PENALTY:-0.05}"
 SEED="${SEED:-42}"
+HF_LOCAL_FILES_ONLY="${HF_LOCAL_FILES_ONLY:-1}"
 
 mkdir -p "${OUTPUT_DIR}"
 
@@ -103,7 +104,7 @@ for GPU_RANK in "${!GPU_ARRAY[@]}"; do
     WORKER_SEED=$((SEED + GLOBAL_RANK))
 
     echo "[launch] rank=${GLOBAL_RANK} gpu=${GPU} local_worker=${LOCAL_WORKER} start_idx=${START} limit=${SHARD_LIMIT}"
-    CUDA_VISIBLE_DEVICES="${GPU}" TOKENIZERS_PARALLELISM=false python3 scripts/generate_mcts_samples.py \
+    CUDA_VISIBLE_DEVICES="${GPU}" TOKENIZERS_PARALLELISM=false HF_LOCAL_FILES_ONLY="${HF_LOCAL_FILES_ONLY}" HF_HUB_OFFLINE="${HF_LOCAL_FILES_ONLY}" TRANSFORMERS_OFFLINE="${HF_LOCAL_FILES_ONLY}" HF_DATASETS_OFFLINE="${HF_LOCAL_FILES_ONLY}" python3 scripts/generate_mcts_samples.py \
       --model_path "${MODEL_PATH}" \
       --hf_dataset "${HF_DATASET}" \
       --hf_split "${HF_SPLIT}" \

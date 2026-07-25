@@ -79,7 +79,14 @@ def load_hf_dataset(dataset_name: str, split: str) -> List[Dict[str, Any]]:
     except ImportError as exc:
         raise ImportError("Install `datasets` to use --hf_dataset, or pass --input_json instead.") from exc
 
-    ds = datasets.load_dataset(dataset_name, split=split, trust_remote_code=True)
+    local_files_only = os.environ.get("HF_LOCAL_FILES_ONLY", "").lower() in {"1", "true", "yes"}
+    ds = datasets.load_dataset(
+        dataset_name,
+        split=split,
+        download_mode="reuse_dataset_if_exists",
+        verification_mode="no_checks",
+        trust_remote_code=False,
+    )
     return list(ds)
 
 

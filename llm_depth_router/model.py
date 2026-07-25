@@ -1,4 +1,5 @@
 import importlib
+import os
 from typing import List
 
 import torch
@@ -84,10 +85,12 @@ def apply_ulysses_patch(model_name: str) -> None:
 
 def get_model(model_name: str, device: str):
     apply_ulysses_patch(model_name)
+    local_files_only = os.environ.get("HF_LOCAL_FILES_ONLY", "").lower() in {"1", "true", "yes"}
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         trust_remote_code=True,
         torch_dtype="auto",
+        local_files_only=local_files_only,
     )
     model.to(device)
     for p in model.parameters():
@@ -98,7 +101,12 @@ def get_model(model_name: str, device: str):
 
 def get_tokenizer(model_name: str, custom_chat_template=None):
     _supported_model_key(model_name)
-    tokenizer = AutoTokenizer.from_pretrained(model_name, padding_side="left")
+    local_files_only = os.environ.get("HF_LOCAL_FILES_ONLY", "").lower() in {"1", "true", "yes"}
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_name,
+        padding_side="left",
+        local_files_only=local_files_only,
+    )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     if tokenizer.pad_token_id is None:

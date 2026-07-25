@@ -1,3 +1,4 @@
+import os
 from typing import List, Tuple
 
 import torch
@@ -26,8 +27,16 @@ class PolarPredictor(nn.Module):
         self.num_layers = num_layers
         self.d_model = d_model
 
-        self.embedding_model = AutoModel.from_pretrained(embedding_model_name)
-        self.embedding_tokenizer = AutoTokenizer.from_pretrained(embedding_model_name, padding_side="left")
+        local_files_only = os.environ.get("HF_LOCAL_FILES_ONLY", "").lower() in {"1", "true", "yes"}
+        self.embedding_model = AutoModel.from_pretrained(
+            embedding_model_name,
+            local_files_only=local_files_only,
+        )
+        self.embedding_tokenizer = AutoTokenizer.from_pretrained(
+            embedding_model_name,
+            padding_side="left",
+            local_files_only=local_files_only,
+        )
         for p in self.embedding_model.parameters():
             p.requires_grad = False
 
@@ -144,4 +153,3 @@ def decode_polar_to_actions(
         beams = new_beams[:beam_size]
 
     return beams
-
