@@ -50,6 +50,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     training.add_argument("--polar_d_model", type=int, default=256, help="Polar model hidden size")
     training.add_argument("--polar_heads", type=int, default=4, help="Polar model attention heads")
     training.add_argument("--polar_layers", type=int, default=2, help="Polar layer-encoder blocks")
+    training.add_argument(
+        "--embedding_model_name",
+        type=str,
+        default="Qwen/Qwen3-Embedding-0.6B",
+        help="Frozen encoder model used by the Polar predictor to encode questions.",
+    )
     training.add_argument("--lenpref_beta", type=float, default=0.05, help="polar_lenpref weight = exp(-beta * path_len)")
     training.add_argument("--drop_original_path_if_shorter_valid", action="store_true", help="Drop full-depth path when a shorter valid path exists")
     training.add_argument("--keep_original_prob", type=float, default=0.0, help="Probability of keeping full-depth path when dropping is enabled")
@@ -62,6 +68,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     evaluation.add_argument("--eval", action="store_true", help="Skip training and only run evaluation")
     evaluation.add_argument("--max_new_tokens", type=int, default=50, help="Max new tokens for online evaluation generation")
     evaluation.add_argument("--num_samples", type=int, default=500)
+    evaluation.add_argument("--eval_start_idx", type=int, default=1500, help="Start index of samples used for evaluation")
     evaluation.add_argument("--eval_all_diffs", action="store_true", help="Evaluate/train on diff1-5 instead of a single target diff")
     evaluation.add_argument("--target_diff", type=int, default=None, choices=[1, 2, 3, 4, 5], help="Use only this difficulty level")
     evaluation.add_argument("--checkpoint_path", type=str, default=None, help="Path to model checkpoint for evaluation")

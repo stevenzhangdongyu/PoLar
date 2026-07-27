@@ -169,6 +169,25 @@ def normalize_samples(
     return out
 
 
+def dedup_rows_by_question(
+    rows: List[Dict[str, Any]],
+    *,
+    question_field: str,
+) -> List[Dict[str, Any]]:
+    q_names = [question_field, "question", "problem", "query", "sample_info.question"]
+    seen = set()
+    out = []
+    for row in rows:
+        question = get_field(row, q_names).strip()
+        if not question:
+            continue
+        if question in seen:
+            continue
+        seen.add(question)
+        out.append(row)
+    return out
+
+
 def dedup_paths(paths: Iterable[Path]) -> List[Path]:
     seen = set()
     out = []
@@ -396,6 +415,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--answer_field", default="gt_ans")
     parser.add_argument("--difficulty", type=int, choices=[1, 2, 3, 4, 5], default=None, help="Filter samples by difficulty level before slicing.")
     parser.add_argument("--difficulty_field", default="query_metadata.level", help="Nested field used for --difficulty filtering.")
+    parser.add_argument("--dedup_questions", action="store_true", help="Deduplicate rows by question before start_idx/limit slicing.")
     parser.add_argument("--print_fields", action="store_true", help="Print dataset fields/examples and exit before loading the model.")
     parser.add_argument("--start_idx", type=int, default=0)
     parser.add_argument("--limit", type=int, default=10, help="Number of input samples to process.")
@@ -442,6 +462,11 @@ def main() -> None:
             f"[filter] difficulty={args.difficulty} via {args.difficulty_field}: "
             f"{len(rows)}/{raw_count} rows kept"
         )
+
+    if args.dedup_questions:
+        before = len(rows)
+        rows = dedup_rows_by_question(rows, question_field=args.question_field)
+        print(f"[dedup] unique questions via {args.question_field}: {len(rows)}/{before} rows kept")
 
     samples = normalize_samples(
         rows,

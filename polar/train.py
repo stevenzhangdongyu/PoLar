@@ -102,7 +102,13 @@ def train_polar(args):
         val_ds = ConcatDataset(val_datasets) if len(val_datasets) > 1 else val_datasets[0]
         val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn_polar)
 
-    model = PolarPredictor(num_layers=args.original_depth, d_model=args.polar_d_model, nheads=args.polar_heads, n_layer_blocks=args.polar_layers).cuda()
+    model = PolarPredictor(
+        num_layers=args.original_depth,
+        embedding_model_name=getattr(args, "embedding_model_name", "Qwen/Qwen3-Embedding-0.6B"),
+        d_model=args.polar_d_model,
+        nheads=args.polar_heads,
+        n_layer_blocks=args.polar_layers,
+    ).cuda()
     opt_eps = float(getattr(args, "optimizer_eps", 1e-8) or 1e-8)
     opt_wd = float(getattr(args, "weight_decay", 0.0) or 0.0)
     optimizer = optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=args.learning_rate, eps=opt_eps, weight_decay=opt_wd)

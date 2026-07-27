@@ -260,7 +260,13 @@ def evaluate_polar(args):
     if not args.checkpoint_path:
         args.checkpoint_path = checkpoint_path_for_args(args)
     print(f"[{method_tag}] Loading checkpoint: {args.checkpoint_path}")
-    predictor = PolarPredictor(num_layers=args.original_depth, d_model=args.polar_d_model, nheads=args.polar_heads, n_layer_blocks=args.polar_layers).cuda()
+    predictor = PolarPredictor(
+        num_layers=args.original_depth,
+        embedding_model_name=getattr(args, "embedding_model_name", "Qwen/Qwen3-Embedding-0.6B"),
+        d_model=args.polar_d_model,
+        nheads=args.polar_heads,
+        n_layer_blocks=args.polar_layers,
+    ).cuda()
     state = torch.load(args.checkpoint_path, map_location="cpu")
     predictor.load_state_dict(state)
     predictor.eval()
@@ -270,7 +276,8 @@ def evaluate_polar(args):
         with open(merged_file, "r") as f:
             data = json.load(f)
         samples = data["samples"] if isinstance(data, dict) and "samples" in data else (list(data.values()) if isinstance(data, dict) else data)
-        start_idx, end_idx = 1500, 2000
+        start_idx = max(0, int(getattr(args, "eval_start_idx", 1500) or 0))
+        end_idx = len(samples)
         if args.num_samples:
             end_idx = min(start_idx + args.num_samples, len(samples))
         samples = samples[start_idx:end_idx]
@@ -384,4 +391,3 @@ def evaluate_polar(args):
         with open(out_path, "w") as f:
             json.dump(results, f, indent=2)
         print(f"[Polar] Saved results to {out_path}")
-

@@ -28,6 +28,7 @@ set -euo pipefail
 #   MAX_CHILDREN_PER_EXPAND=64
 #   MAX_PATH_LEN_RATIO=1.15
 #   LENGTH_PENALTY=0.05
+#   DEDUP_QUESTIONS=1
 
 MODEL_PATH="${1:?model_path is required}"
 HF_DATASET="${2:?hf_dataset is required}"
@@ -45,6 +46,7 @@ MAX_CHILDREN_PER_EXPAND="${MAX_CHILDREN_PER_EXPAND:-64}"
 MAX_PATH_LEN_RATIO="${MAX_PATH_LEN_RATIO:-1.15}"
 LENGTH_PENALTY="${LENGTH_PENALTY:-0.05}"
 HF_LOCAL_FILES_ONLY="${HF_LOCAL_FILES_ONLY:-1}"
+DEDUP_QUESTIONS="${DEDUP_QUESTIONS:-1}"
 
 mkdir -p "${OUTPUT_DIR}"
 
@@ -79,6 +81,11 @@ for RANK in "${!GPU_ARRAY[@]}"; do
   LOG_FILE="${OUTPUT_DIR}/shard_${RANK}.log"
 
   echo "[launch] rank=${RANK} gpu=${GPU} start_idx=${START} limit=${SHARD_LIMIT}"
+  EXTRA_ARGS=()
+  if [[ "${DEDUP_QUESTIONS}" == "1" || "${DEDUP_QUESTIONS,,}" == "true" ]]; then
+    EXTRA_ARGS+=(--dedup_questions)
+  fi
+
   CUDA_VISIBLE_DEVICES="${GPU}" TOKENIZERS_PARALLELISM=false HF_LOCAL_FILES_ONLY="${HF_LOCAL_FILES_ONLY}" HF_HUB_OFFLINE="${HF_LOCAL_FILES_ONLY}" TRANSFORMERS_OFFLINE="${HF_LOCAL_FILES_ONLY}" HF_DATASETS_OFFLINE="${HF_LOCAL_FILES_ONLY}" python3 scripts/generate_mcts_samples.py \
     --model_path "${MODEL_PATH}" \
     --hf_dataset "${HF_DATASET}" \
@@ -96,6 +103,7 @@ for RANK in "${!GPU_ARRAY[@]}"; do
     --max_new_tokens "${MAX_NEW_TOKENS}" \
     --device cuda \
     --resume \
+    "${EXTRA_ARGS[@]}" \
     > "${LOG_FILE}" 2>&1 &
 
   PIDS+=("$!")
