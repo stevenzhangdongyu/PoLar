@@ -28,7 +28,7 @@ set -euo pipefail
 #   2 data_root
 #   3 diff_or_all        (1-5 or "all")
 #   4 save_dir
-#   5+ merged_json paths  (one for single diff, five for all)
+#   5+ merged_json paths  (one for single diff, five for all; linked into data_root before training)
 #
 # Optional env vars:
 #   NUM_EPOCHS=20
@@ -62,6 +62,8 @@ if [[ "$#" -lt 1 ]]; then
   exit 1
 fi
 
+MERGED_JSONS=("$@")
+
 NUM_EPOCHS="${NUM_EPOCHS:-20}"
 BATCH_SIZE="${BATCH_SIZE:-16}"
 LEARNING_RATE="${LEARNING_RATE:-1e-4}"
@@ -84,6 +86,58 @@ HF_LOCAL_FILES_ONLY="${HF_LOCAL_FILES_ONLY:-1}"
 TARGET_DIFF="${TARGET_DIFF:-}"
 
 mkdir -p "${SAVE_DIR}"
+
+link_merged_json() {
+  local diff="$1"
+  local src="$2"
+  local dst_dir="${DATA_ROOT}/dart-math-diff-${diff}"
+  local dst="${dst_dir}/merged_mcts_samples.json"
+
+  if [[ ! -f "${src}" ]]; then
+    echo "Missing merged_json for diff-${diff}: ${src}" >&2
+    exit 1
+  fi
+
+  mkdir -p "${dst_dir}"
+  local abs_src
+  abs_src="$(cd "$(dirname "${src}")" && pwd)/$(basename "${src}")"
+
+  if [[ -e "${dst}" ]]; then
+    if [[ "$(realpath "${dst}")" == "${abs_src}" ]]; then
+      echo "[data] diff-${diff}: ${dst} already points to ${abs_src}"
+      return
+    fi
+    if [[ "${FORCE_LINK_DATA:-0}" == "1" ]]; then
+      echo "[data] diff-${diff}: replacing ${dst} -> ${abs_src}"
+      rm -f "${dst}"
+    else
+      echo "Refusing to overwrite existing ${dst}" >&2
+      echo "It points to: $(realpath "${dst}")" >&2
+      echo "New source:   ${abs_src}" >&2
+      echo "Set FORCE_LINK_DATA=1 if you want this script to replace it." >&2
+      exit 1
+    fi
+  fi
+
+  ln -s "${abs_src}" "${dst}"
+  echo "[data] diff-${diff}: linked ${dst} -> ${abs_src}"
+}
+
+if [[ "${DIFF_OR_ALL}" == "all" ]]; then
+  if [[ "${#MERGED_JSONS[@]}" -ne 5 ]]; then
+    echo "Mode 'all' expects exactly 5 merged_json paths, one for each diff 1-5." >&2
+    exit 1
+  fi
+  for i in 0 1 2 3 4; do
+    link_merged_json "$((i + 1))" "${MERGED_JSONS[$i]}"
+  done
+else
+  if [[ "${#MERGED_JSONS[@]}" -ne 1 ]]; then
+    echo "Single-diff mode expects exactly 1 merged_json path." >&2
+    exit 1
+  fi
+  link_merged_json "${DIFF_OR_ALL}" "${MERGED_JSONS[0]}"
+fi
 
 COMMON_ARGS=(
   --model_path "${MODEL_PATH}"
@@ -145,4 +199,4 @@ echo "[launch] mode=${DIFF_OR_ALL}"
 echo "[launch] env: HF_LOCAL_FILES_ONLY=${HF_LOCAL_FILES_ONLY}"
 
 HF_LOCAL_FILES_ONLY="${HF_LOCAL_FILES_ONLY}" HF_HUB_OFFLINE="${HF_LOCAL_FILES_ONLY}" TRANSFORMERS_OFFLINE="${HF_LOCAL_FILES_ONLY}" HF_DATASETS_OFFLINE="${HF_LOCAL_FILES_ONLY}" \
-  python3 run_polar.py "${COMMON_ARGS[@]}" "$@"
+  python3 run_polar.py "${COMMON_ARGS[@]}"
