@@ -14,19 +14,19 @@ set -euo pipefail
 # Common overrides:
 #   MODEL_PATH=Qwen/Qwen2.5-3B-Instruct
 #   DATA_ROOT=./data/Qwen/Qwen2.5-3B-Instruct
-#   MCTS_SUBDIR=multiworker_unique
+#   MCTS_SUBDIR=multiworker_unique_from_json
 #   SAVE_DIR=./outputs
 #   NUM_EPOCHS=20
 #   BATCH_SIZE=16
 #   LEARNING_RATE=1e-4
 #   EMBEDDING_MODEL_NAME=Qwen/Qwen2.5-3B-Instruct
 #
-# If your merged files are in `multiworker` instead of `multiworker_unique`:
+# If your merged files are in `multiworker` instead of `multiworker_unique_from_json`:
 #   MCTS_SUBDIR=multiworker bash scripts/run_train_predictor_all_levels.sh
 
 MODEL_PATH="${MODEL_PATH:-Qwen/Qwen2.5-3B-Instruct}"
 DATA_ROOT="${DATA_ROOT:-./data/Qwen/Qwen2.5-3B-Instruct}"
-MCTS_SUBDIR="${MCTS_SUBDIR:-multiworker_unique}"
+MCTS_SUBDIR="${MCTS_SUBDIR:-multiworker_unique_from_json}"
 SAVE_DIR="${SAVE_DIR:-./outputs}"
 
 MERGED_JSONS=()
