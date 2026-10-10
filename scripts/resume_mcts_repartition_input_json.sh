@@ -16,6 +16,7 @@ set -euo pipefail
 #   3 old_output_dir       (directory from the interrupted run)
 #   4 new_output_dir       (directory for newly repartitioned workers)
 #   5 simulations
+#   6 total_limit         (maximum number of input questions; <=0 means all)
 #
 # Example:
 #   GPUS="0 1 2 3 4 5 6 7" WORKERS_PER_GPU=10 MAX_TOTAL_WORKERS=80 \
@@ -25,13 +26,15 @@ set -euo pipefail
 #     ./data/unique_inputs_diff5.json \
 #     ./data/.../diff5/mcts_old_w5 \
 #     ./data/.../diff5/mcts_resume_w10 \
-#     100
+#     100 \
+#     2000
 
 MODEL_PATH="${1:?model_path is required}"
 INPUT_JSON="${2:?original input_json is required}"
 OLD_OUTPUT_DIR="${3:?old output directory is required}"
 NEW_OUTPUT_DIR="${4:?new output directory is required}"
 SIMULATIONS="${5:?simulations is required}"
+TOTAL_LIMIT="${6:-0}"
 
 GPUS="${GPUS:-0 1 2 3 4 5 6 7}"
 WORKERS_PER_GPU="${WORKERS_PER_GPU:-10}"
@@ -61,13 +64,14 @@ mkdir -p "${NEW_OUTPUT_DIR}"
 REMAINING_JSON="${NEW_OUTPUT_DIR}/.remaining_questions.json"
 FINAL_OUTPUT="${NEW_OUTPUT_DIR}/merged_mcts_samples.json"
 
-python3 - "${INPUT_JSON}" "${OLD_OUTPUT_DIR}" "${REMAINING_JSON}" "${QUESTION_FIELD}" <<'PY'
+python3 - "${INPUT_JSON}" "${OLD_OUTPUT_DIR}" "${REMAINING_JSON}" "${QUESTION_FIELD}" "${TOTAL_LIMIT}" <<'PY'
 import glob
 import json
 import os
 import sys
 
-input_path, old_dir, remaining_path, question_field = sys.argv[1:]
+input_path, old_dir, remaining_path, question_field, total_limit = sys.argv[1:]
+total_limit = int(total_limit)
 
 def load_payload(path):
     with open(path, encoding="utf-8") as f:
@@ -114,6 +118,8 @@ for path in old_files:
 rows = load_payload(input_path)
 if not isinstance(rows, list):
     raise ValueError(f"Unsupported input shape: {type(rows)}")
+if total_limit > 0:
+    rows = rows[:total_limit]
 
 seen_input = set()
 remaining = []
@@ -142,6 +148,7 @@ with open(remaining_path, "w", encoding="utf-8") as f:
 print(f"[repartition] old shard files: {len(old_files)}")
 print(f"[repartition] completed questions found: {len(completed)}")
 print(f"[repartition] original input rows: {len(rows)}")
+print(f"[repartition] total_limit: {total_limit if total_limit > 0 else 'all'}")
 print(f"[repartition] duplicate input rows skipped: {duplicate_input}")
 print(f"[repartition] already completed skipped: {already_done}")
 print(f"[repartition] missing question rows skipped: {missing_question}")
