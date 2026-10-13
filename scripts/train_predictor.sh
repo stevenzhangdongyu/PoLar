@@ -104,8 +104,15 @@ link_merged_json() {
   local abs_src
   abs_src="$(cd "$(dirname "${src}")" && pwd)/$(basename "${src}")"
 
-  if [[ -e "${dst}" ]]; then
-    if [[ "$(realpath "${dst}")" == "${abs_src}" ]]; then
+  # -e follows symlinks and is false for a dangling link; -L still detects it.
+  if [[ -e "${dst}" || -L "${dst}" ]]; then
+    if [[ -d "${dst}" && ! -L "${dst}" ]]; then
+      echo "Refusing to replace directory: ${dst}" >&2
+      exit 1
+    fi
+    local resolved_dst
+    resolved_dst="$(realpath "${dst}" 2>/dev/null || true)"
+    if [[ "${resolved_dst}" == "${abs_src}" ]]; then
       echo "[data] diff-${diff}: ${dst} already points to ${abs_src}"
       return
     fi
@@ -114,7 +121,7 @@ link_merged_json() {
       rm -f "${dst}"
     else
       echo "Refusing to overwrite existing ${dst}" >&2
-      echo "It points to: $(realpath "${dst}")" >&2
+      echo "It points to: ${resolved_dst:-unresolvable/dangling link}" >&2
       echo "New source:   ${abs_src}" >&2
       echo "Set FORCE_LINK_DATA=1 if you want this script to replace it." >&2
       exit 1

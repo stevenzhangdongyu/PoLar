@@ -1,0 +1,18 @@
+[
+  {
+    "id": "qa_demo_1",
+    "question": "What is the capital of France?",
+    "answers": ["Paris"]
+  },
+  {
+    "id": "qa_demo_2",
+    "question": "Who wrote Hamlet?",
+    "answers": ["William Shakespeare", "Shakespeare"]
+  },
+  {
+    "id": "qa_demo_3",
+    "question": "Where was Alice born?",
+    "context": "Alice was born in London. She later moved to Paris.",
+    "answers": {"text": ["London"], "answer_start": [18]}
+  }
+]
