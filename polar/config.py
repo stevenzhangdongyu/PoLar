@@ -107,7 +107,13 @@ def resolve_dart_base_path(model_path: str, data_root: Optional[str] = None) -> 
     if not root:
         raise ValueError("--data_root or DART_MATH_RESULTS_ROOT must be set.")
     root = os.path.abspath(os.path.expanduser(root))
-    model_rel = str(model_path).strip("/")
+    expanded_model_path = os.path.expanduser(str(model_path))
+    if os.path.isabs(expanded_model_path):
+        # A local model directory should map to data_root/<model-directory-name>,
+        # not data_root/<entire absolute model path>.
+        model_rel = os.path.basename(os.path.normpath(expanded_model_path))
+    else:
+        model_rel = str(model_path).strip("/")
     if os.path.normpath(root).endswith(os.path.normpath(model_rel)):
         return root
     return os.path.join(root, model_rel)

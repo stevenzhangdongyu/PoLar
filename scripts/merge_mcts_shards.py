@@ -31,6 +31,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--inputs", nargs="+", required=True, help="Shard files or glob patterns.")
     parser.add_argument("--output", required=True, help="Merged output JSON path.")
     parser.add_argument("--dedup_by_question", action="store_true", help="Drop duplicate questions, keeping the first occurrence.")
+    parser.add_argument(
+        "--skip_invalid",
+        action="store_true",
+        help="Skip unreadable or malformed shard JSON files instead of aborting the merge.",
+    )
     return parser
 
 
@@ -43,13 +48,28 @@ def main() -> None:
 
     merged: List[Dict[str, Any]] = []
     seen_questions = set()
+    loaded_shards = 0
+    skipped_shards: List[str] = []
     for path in input_paths:
         if not os.path.exists(path):
             print(f"[skip] missing shard: {path}")
+            skipped_shards.append(path)
             continue
-        samples = load_samples(path)
+        try:
+            samples = load_samples(path)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            if not args.skip_invalid:
+                raise
+            print(f"[skip] invalid shard: {path}: {exc}")
+            skipped_shards.append(path)
+            continue
+        loaded_shards += 1
         kept = 0
         for sample in samples:
+            if not isinstance(sample, dict):
+                if args.skip_invalid:
+                    continue
+                raise ValueError(f"Non-dictionary sample in {path}: {type(sample)}")
             question = str(sample.get("question", ""))
             if args.dedup_by_question and question in seen_questions:
                 continue
@@ -62,7 +82,10 @@ def main() -> None:
     payload = {
         "metadata": {
             "generator": "scripts/merge_mcts_shards.py",
-            "num_shards": len(input_paths),
+            "num_input_shards": len(input_paths),
+            "num_loaded_shards": loaded_shards,
+            "num_skipped_shards": len(skipped_shards),
+            "skipped_shards": skipped_shards,
             "num_samples": len(merged),
         },
         "samples": merged,

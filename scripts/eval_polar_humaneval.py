@@ -22,6 +22,7 @@ trusted/isolated environment.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 import subprocess
@@ -147,6 +148,12 @@ def extract_code(text: str, entry_point: str) -> str:
     match = _PYTHON_FENCE_RE.search(text)
     if match:
         text = match.group(1).strip()
+    # Preserve valid imports and helper functions before the entry point.
+    try:
+        ast.parse(text)
+        return text.strip()
+    except SyntaxError:
+        pass
     # If the model echoed prose before the function, start at the definition.
     positions = [text.find(f"def {entry_point}("), text.find(f"async def {entry_point}(")]
     positions = [p for p in positions if p >= 0]
@@ -198,6 +205,29 @@ def run_humaneval_test(
         return False, err[-1000:]
 
 
+def describe_path(path: Sequence[int], depth: int) -> Dict[str, Any]:
+    """Make the layer decisions human-readable for saved intermediate results."""
+    visits = [int(x) for x in path]
+    counts: Dict[int, int] = {}
+    for layer in visits:
+        counts[layer] = counts.get(layer, 0) + 1
+    operations = []
+    seen = set()
+    for pos, layer in enumerate(visits):
+        operations.append({
+            "visit_index": pos,
+            "layer": layer,
+            "operation": "repeat" if layer in seen else "execute",
+        })
+        seen.add(layer)
+    return {
+        "operations": operations,
+        "skipped_layers": [i for i in range(depth) if i not in counts],
+        "repeated_layers": sorted([i for i, n in counts.items() if n > 1]),
+        "layer_visit_counts": {str(i): n for i, n in sorted(counts.items())},
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Evaluate POLAR on HumanEval.")
     p.add_argument("--model_path", required=True)
@@ -221,6 +251,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--polar_heads", type=int, default=4)
     p.add_argument("--polar_layers", type=int, default=2)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--save_every", type=int, default=1)
+    p.add_argument("--resume_existing", action="store_true")
     return p
 
 
@@ -248,8 +280,58 @@ def main() -> None:
 
     full_path = list(range(depth))
     results: List[Dict[str, Any]] = []
+    completed_ids = set()
+    if args.resume_existing and Path(args.save_json).is_file():
+        try:
+            previous = json.loads(Path(args.save_json).read_text(encoding="utf-8"))
+            previous_results = previous.get("results", []) if isinstance(previous, dict) else []
+            if isinstance(previous_results, list):
+                results = [x for x in previous_results if isinstance(x, dict)]
+                completed_ids = {str(x.get("task_id")) for x in results}
+                print(f"[resume] loaded {len(results)} completed tasks")
+        except Exception as exc:
+            print(f"[resume] ignoring unreadable partial output: {exc}", file=sys.stderr)
+
+    def make_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+        n_rows = len(rows)
+        return {
+            "num_tasks": n_rows,
+            "base_accuracy": sum(bool(x.get("base", {}).get("passed")) for x in rows) / max(1, n_rows),
+            "polar_top1_accuracy": sum(bool(x.get("polar_top1")) for x in rows) / max(1, n_rows),
+            "polar_topk_accuracy": sum(bool(x.get("polar_topk")) for x in rows) / max(1, n_rows),
+            "beam_size": args.beam_size,
+            "top_k_ops": args.top_k_ops,
+            "top_k_paths": args.top_k_paths,
+            "max_new_tokens": args.max_new_tokens,
+            "model_path": args.model_path,
+            "checkpoint_path": args.checkpoint_path,
+            "start_idx": args.start_idx,
+            "requested_num_samples": args.num_samples,
+        }
+
+    def save_partial(status: str = "partial") -> None:
+        rows = sorted(results, key=lambda x: str(x.get("task_id")))
+        out_path = Path(args.save_json)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
+        tmp_path.write_text(
+            json.dumps({"summary": make_summary(rows), "results": rows, "status": status},
+                       ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        tmp_path.replace(out_path)
+
+    def trace(event: Dict[str, Any]) -> None:
+        trace_path = Path(args.save_json).with_suffix(".trace.jsonl")
+        trace_path.parent.mkdir(parents=True, exist_ok=True)
+        with trace_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+
     base_correct = polar_top1_correct = polar_topk_correct = 0
     for idx, task in enumerate(tasks):
+        task_key = str(task.get("task_id", args.start_idx + idx))
+        if task_key in completed_ids:
+            continue
         question = model_prompt(task)
         with torch.no_grad():
             seg_logits, op_logits = predictor([question])
@@ -262,6 +344,7 @@ def main() -> None:
             top_k_ops=args.top_k_ops,
         )
         paths: List[Tuple[List[int], float]] = []
+        actions_by_path = {}
         seen = set()
         for actions, score in beams:
             path = actions_to_path(actions, depth)
@@ -269,12 +352,18 @@ def main() -> None:
             if key not in seen and path:
                 seen.add(key)
                 paths.append((path, float(score)))
+                actions_by_path[key] = [
+                    {"operation": op, "segment_length": size, "count": count}
+                    for op, size, count in actions
+                ]
         paths = paths[: max(1, args.top_k_paths)]
 
         base_text = generate_completion(
             model, tokenizer, args.model_path, full_path, task, args.max_new_tokens
         )
         base_ok, base_err = run_humaneval_test(task, base_text, args.test_timeout)
+        trace({"task_id": task_key, "stage": "base", "path": full_path,
+               "completion": base_text, "passed": base_ok, "error": base_err})
 
         candidates = []
         for path, score in paths:
@@ -286,13 +375,18 @@ def main() -> None:
                 {
                     "path": path,
                     "score": score,
+                    "segment_actions": actions_by_path[tuple(path)],
+                    **describe_path(path, depth),
                     "unique_depth": len(set(path)),
                     "total_layer_executions": len(path),
                     "passed": ok,
                     "error": err,
                     "completion": text,
+                    "extracted_code": extract_code(text, str(task["entry_point"])),
                 }
             )
+            trace({"task_id": task_key, "stage": "polar", "rank": len(candidates),
+                   **candidates[-1]})
 
         top1_ok = bool(candidates and candidates[0]["passed"])
         topk_ok = any(x["passed"] for x in candidates)
@@ -300,35 +394,32 @@ def main() -> None:
         polar_top1_correct += int(top1_ok)
         polar_topk_correct += int(topk_ok)
         result = {
-            "task_id": task.get("task_id", idx),
+            "task_id": task.get("task_id", args.start_idx + idx),
+            "dataset_index": args.start_idx + idx,
             "entry_point": task["entry_point"],
-            "base": {"passed": base_ok, "error": base_err, "completion": base_text},
+            "original_prompt": task["prompt"],
+            "predictor_input": question,
+            "rendered_model_input": apply_chat_template(tokenizer, args.model_path, question),
+            "segmentation_logits": seg_logits[0].detach().float().cpu().tolist(),
+            "operation_logits": op_logits[0].detach().float().cpu().tolist(),
+            "base": {"passed": base_ok, "error": base_err, "completion": base_text,
+                     "extracted_code": extract_code(base_text, str(task["entry_point"])),
+                     "path": full_path},
             "polar_top1": top1_ok,
             "polar_topk": topk_ok,
             "candidates": candidates,
         }
         results.append(result)
+        completed_ids.add(task_key)
+        if len(results) % max(1, args.save_every) == 0:
+            save_partial()
         print(
             f"[{idx + 1}/{len(tasks)}] {result['task_id']} "
             f"base={int(base_ok)} polar@1={int(top1_ok)} polar@{len(candidates)}={int(topk_ok)}"
         )
 
-    n = len(tasks)
-    summary = {
-        "num_tasks": n,
-        "base_accuracy": base_correct / max(1, n),
-        "polar_top1_accuracy": polar_top1_correct / max(1, n),
-        "polar_topk_accuracy": polar_topk_correct / max(1, n),
-        "beam_size": args.beam_size,
-        "top_k_ops": args.top_k_ops,
-        "top_k_paths": args.top_k_paths,
-        "max_new_tokens": args.max_new_tokens,
-        "model_path": args.model_path,
-        "checkpoint_path": args.checkpoint_path,
-    }
-    out = {"summary": summary, "results": results}
-    Path(args.save_json).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.save_json).write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+    summary = make_summary(results)
+    save_partial("complete")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     print(f"[saved] {args.save_json}")
 
