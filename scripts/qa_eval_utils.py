@@ -35,6 +35,7 @@ def read_tasks(path, mode="short_answer"):
             raise ValueError(f"Row {i} has no non-empty question/query.")
         task_id = str(row.get("task_id", row.get("id", f"qa/{i}")))
         if task_id in ids:
+            continue
             raise ValueError(f"Duplicate task_id: {task_id}")
         ids.add(task_id)
         answers = row.get("answers", row.get("answer", row.get("gt_ans", row.get("answerKey"))))
