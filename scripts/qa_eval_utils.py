@@ -188,4 +188,8 @@ def summarize(rows):
         summary["polar_top1_mean_" + field] = (
             sum(c[field] for c in candidates) / len(candidates) if candidates else None)
     summary["no_candidate_tasks"] = sum(not r["candidates"] for r in rows)
+    from candidate_selection import selection_summary, sampling_summary
+    correct = lambda c: bool(c["exact_match"])
+    summary["selector"] = selection_summary(rows, correct)
+    summary["sampling_comparison"] = sampling_summary(rows, correct)
     return summary

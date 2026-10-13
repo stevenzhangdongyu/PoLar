@@ -24,6 +24,10 @@ ARGS=(
   --polar_heads "${POLAR_HEADS:-4}"
   --polar_layers "${POLAR_LAYERS:-2}"
   --seed "${SEED:-42}"
+  --selection_strategy "${SELECTION_STRATEGY:-top1}"
+  --base_sampling_k "${BASE_SAMPLING_K:-0}"
+  --temperature "${TEMPERATURE:-0.7}"
+  --top_p "${TOP_P:-0.95}"
 )
 if [[ "${RESUME:-0}" == "1" ]]; then ARGS+=(--resume); fi
 if [[ "${MERGE_ONLY:-0}" == "1" ]]; then ARGS+=(--merge_only); fi

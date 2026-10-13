@@ -28,6 +28,9 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
+import hashlib
+from candidate_selection import select_candidate, selection_summary, sampling_summary
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -126,6 +129,7 @@ def generate_completion(
     path: Sequence[int],
     task: Dict[str, Any],
     max_new_tokens: int,
+    *, sample=False, temperature=0.7, top_p=0.95,
 ) -> str:
     setup_custom_path(model, list(path))
     rendered = apply_chat_template(tokenizer, model_path, model_prompt(task))
@@ -133,8 +137,9 @@ def generate_completion(
     output_ids = model.generate(
         **inputs,
         max_new_tokens=int(max_new_tokens),
-        do_sample=False,
+        do_sample=sample,
         use_cache=True,
+        **({"temperature": temperature, "top_p": top_p} if sample else {}),
     )
     new_ids = output_ids[0][len(inputs.input_ids[0]) :]
     return tokenizer.decode(new_ids, skip_special_tokens=True).strip()
@@ -251,6 +256,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--polar_heads", type=int, default=4)
     p.add_argument("--polar_layers", type=int, default=2)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--selection_strategy", choices=("top1", "nonbase_top1", "majority"), default="top1")
+    p.add_argument("--base_sampling_k", type=int, default=0)
+    p.add_argument("--temperature", type=float, default=0.7)
+    p.add_argument("--top_p", type=float, default=0.95)
     p.add_argument("--save_every", type=int, default=1)
     p.add_argument("--resume_existing", action="store_true")
     return p
@@ -258,6 +267,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
+    if args.base_sampling_k < 0 or (args.base_sampling_k and args.base_sampling_k != args.top_k_paths):
+        raise ValueError("base_sampling_k must be 0 or equal top_k_paths.")
+    if args.temperature <= 0 or not 0 < args.top_p <= 1:
+        raise ValueError("temperature > 0 and 0 < top_p <= 1 required.")
     torch.manual_seed(args.seed)
     tasks = load_tasks(args)
 
@@ -279,6 +292,18 @@ def main() -> None:
     predictor.eval()
 
     full_path = list(range(depth))
+
+    def clock():
+        torch.cuda.synchronize()
+        return time.perf_counter()
+
+    def generate_timed(path, task, *, sample=False):
+        start = clock()
+        text = generate_completion(model, tokenizer, args.model_path, path, task,
+                                   args.max_new_tokens, sample=sample,
+                                   temperature=args.temperature, top_p=args.top_p)
+        return text, clock() - start
+
     results: List[Dict[str, Any]] = []
     completed_ids = set()
     if args.resume_existing and Path(args.save_json).is_file():
@@ -307,6 +332,8 @@ def main() -> None:
             "checkpoint_path": args.checkpoint_path,
             "start_idx": args.start_idx,
             "requested_num_samples": args.num_samples,
+            "selector": selection_summary(rows, lambda c: bool(c["passed"])),
+            "sampling_comparison": sampling_summary(rows, lambda c: bool(c["passed"])),
         }
 
     def save_partial(status: str = "partial") -> None:
@@ -332,6 +359,8 @@ def main() -> None:
         task_key = str(task.get("task_id", args.start_idx + idx))
         if task_key in completed_ids:
             continue
+        task_started = clock()
+        torch.manual_seed(args.seed + int(hashlib.sha256(task_key.encode()).hexdigest()[:8], 16))
         question = model_prompt(task)
         with torch.no_grad():
             seg_logits, op_logits = predictor([question])
@@ -357,23 +386,21 @@ def main() -> None:
                     for op, size, count in actions
                 ]
         paths = paths[: max(1, args.top_k_paths)]
+        predictor_seconds = clock() - task_started
 
-        base_text = generate_completion(
-            model, tokenizer, args.model_path, full_path, task, args.max_new_tokens
-        )
+        base_text, base_seconds = generate_timed(full_path, task)
         base_ok, base_err = run_humaneval_test(task, base_text, args.test_timeout)
         trace({"task_id": task_key, "stage": "base", "path": full_path,
                "completion": base_text, "passed": base_ok, "error": base_err})
 
         candidates = []
         for path, score in paths:
-            text = generate_completion(
-                model, tokenizer, args.model_path, path, task, args.max_new_tokens
-            )
+            text, generation_seconds = generate_timed(path, task)
             ok, err = run_humaneval_test(task, text, args.test_timeout)
             candidates.append(
                 {
                     "path": path,
+                    "generation_seconds": generation_seconds,
                     "score": score,
                     "segment_actions": actions_by_path[tuple(path)],
                     **describe_path(path, depth),
@@ -388,6 +415,33 @@ def main() -> None:
             trace({"task_id": task_key, "stage": "polar", "rank": len(candidates),
                    **candidates[-1]})
 
+        base_record = {"passed": base_ok, "error": base_err, "completion": base_text,
+                       "extracted_code": extract_code(base_text, str(task["entry_point"])),
+                       "path": full_path, "generation_seconds": base_seconds}
+        base_samples = []
+        if args.base_sampling_k:
+            for sample_idx in range(len(candidates)):
+                text, elapsed = generate_timed(full_path, task, sample=True)
+                ok, err = run_humaneval_test(task, text, args.test_timeout)
+                draw = {"path": full_path, "completion": text, "passed": ok, "error": err,
+                        "extracted_code": extract_code(text, str(task["entry_point"])),
+                        "generation_seconds": elapsed, "do_sample": True}
+                base_samples.append(draw)
+                trace({"stage": "base_sampling", "task_id": task_key,
+                       "rank": sample_idx + 1, **draw})
+        selection_started = clock()
+        selected, reason = select_candidate(base_record, candidates, args.selection_strategy)
+        selection_seconds = clock() - selection_started
+        polar_seconds = sum(c["generation_seconds"] for c in candidates)
+        timings = {
+            "base_greedy_seconds": base_seconds, "predictor_seconds": predictor_seconds,
+            "polar_generation_seconds": polar_seconds,
+            "base_sampling_seconds": sum(c["generation_seconds"] for c in base_samples),
+            "selection_seconds": selection_seconds, "verifier_seconds": 0.0,
+            "selected_pipeline_seconds": base_seconds + predictor_seconds
+                + polar_seconds + selection_seconds,
+            "end_to_end_seconds": clock() - task_started,
+        }
         top1_ok = bool(candidates and candidates[0]["passed"])
         topk_ok = any(x["passed"] for x in candidates)
         base_correct += int(base_ok)
@@ -402,9 +456,10 @@ def main() -> None:
             "rendered_model_input": apply_chat_template(tokenizer, args.model_path, question),
             "segmentation_logits": seg_logits[0].detach().float().cpu().tolist(),
             "operation_logits": op_logits[0].detach().float().cpu().tolist(),
-            "base": {"passed": base_ok, "error": base_err, "completion": base_text,
-                     "extracted_code": extract_code(base_text, str(task["entry_point"])),
-                     "path": full_path},
+            "base": base_record, "base_samples": base_samples,
+            "selected": selected, "selection_reason": reason,
+            "requested_sampling_k": args.base_sampling_k,
+            "selection_strategy": args.selection_strategy, "timings": timings,
             "polar_top1": top1_ok,
             "polar_topk": topk_ok,
             "candidates": candidates,

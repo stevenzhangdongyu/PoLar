@@ -87,6 +87,9 @@ def merge_results(output_dir, manifest):
         "top_k_paths": manifest["configuration"]["top_k_paths"],
         "metric_note": "POLAR top-k = any candidate path passes; not unbiased stochastic pass@k.",
     }
+    from candidate_selection import selection_summary, sampling_summary
+    summary["selector"] = selection_summary(rows, lambda c: bool(c["passed"]))
+    summary["sampling_comparison"] = sampling_summary(rows, lambda c: bool(c["passed"]))
     for label, candidates in (
         ("polar_top1", [x["candidates"][0] for x in rows if x["candidates"]]),
         ("polar_all_candidates", [c for x in rows for c in x["candidates"]]),
@@ -125,6 +128,10 @@ def build_parser():
     p.add_argument("--polar_heads", type=int, default=4)
     p.add_argument("--polar_layers", type=int, default=2)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--selection_strategy", choices=("top1", "nonbase_top1", "majority"), default="top1")
+    p.add_argument("--base_sampling_k", type=int, default=0)
+    p.add_argument("--temperature", type=float, default=0.7)
+    p.add_argument("--top_p", type=float, default=0.95)
     p.add_argument("--resume", action="store_true", help="Same configuration/output directory only.")
     p.add_argument("--merge_only", action="store_true")
     p.add_argument("--allow_code_execution", action="store_true",
@@ -134,6 +141,10 @@ def build_parser():
 
 def main():
     args = build_parser().parse_args()
+    if args.base_sampling_k < 0 or (args.base_sampling_k and args.base_sampling_k != args.top_k_paths):
+        raise ValueError("base_sampling_k must be 0 or equal top_k_paths.")
+    if args.temperature <= 0 or not 0 < args.top_p <= 1:
+        raise ValueError("temperature > 0 and 0 < top_p <= 1 required.")
     out = Path(args.output_dir).resolve()
     manifest_path = out / "manifest.json"
     if args.merge_only:
@@ -185,7 +196,8 @@ def main():
     forwarded = ("model_path", "checkpoint_path", "max_new_tokens", "beam_size",
                  "top_k_ops", "top_k_paths", "seg_threshold", "max_pack",
                  "test_timeout", "embedding_model_name", "polar_d_model",
-                 "polar_heads", "polar_layers", "seed")
+                 "polar_heads", "polar_layers", "seed", "selection_strategy",
+                 "base_sampling_k", "temperature", "top_p")
     running = []
     print(f"[launch] tasks={len(tasks)} workers={workers} output={out}", flush=True)
     try:

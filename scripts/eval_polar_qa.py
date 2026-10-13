@@ -6,6 +6,8 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import time
+from candidate_selection import select_candidate
 
 from qa_eval_utils import (
     describe_path, extract_answer, model_prompt, read_tasks, score_answer,
@@ -36,6 +38,11 @@ def build_parser(*, multiworker=False):
     p.add_argument("--polar_heads", type=int, default=4)
     p.add_argument("--polar_layers", type=int, default=2)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--selection_strategy", choices=("top1", "nonbase_top1", "majority"), default="top1")
+    p.add_argument("--base_sampling_k", type=int, default=0,
+                   help="0 disables; positive k must equal top_k_paths; match actual distinct paths.")
+    p.add_argument("--temperature", type=float, default=0.7)
+    p.add_argument("--top_p", type=float, default=0.95)
     if not multiworker:
         p.add_argument("--resume_existing", action="store_true")
     return p
@@ -53,6 +60,10 @@ def render_prompt(tokenizer, prompt, model_path):
 
 def main():
     args = build_parser().parse_args()
+    if args.base_sampling_k < 0 or (args.base_sampling_k and args.base_sampling_k != args.top_k_paths):
+        raise ValueError("base_sampling_k must be 0 or equal top_k_paths.")
+    if args.temperature <= 0 or not 0 < args.top_p <= 1:
+        raise ValueError("temperature > 0 and 0 < top_p <= 1 required.")
     if args.start_idx < 0 or args.max_new_tokens < 1 or args.top_k_paths < 1:
         raise ValueError("Use start_idx >= 0, max_new_tokens/top_k_paths >= 1.")
     if args.beam_size < 1 or args.max_pack < 1 or not 1 <= args.top_k_ops <= 3:
@@ -113,18 +124,27 @@ def main():
         with trace_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")
 
-    def generate(path, rendered, task):
+    def clock():
+        torch.cuda.synchronize()
+        return time.perf_counter()
+
+    def generate(path, rendered, task, *, sample=False):
+        started = clock()
         setup_custom_path(model, path)
         inputs = tokenizer([rendered], return_tensors="pt").to(model.device)
+        sampling = {"temperature": args.temperature, "top_p": args.top_p} if sample else {}
         with torch.no_grad():
             outputs = model.generate(
-                **inputs, do_sample=False, max_new_tokens=args.max_new_tokens,
+                **inputs, do_sample=sample, max_new_tokens=args.max_new_tokens,
                 use_cache=True, pad_token_id=tokenizer.pad_token_id,
+                **sampling,
             )
         new_ids = outputs[0][inputs.input_ids.shape[1]:]
         completion = tokenizer.decode(new_ids, skip_special_tokens=True).strip()
         answer = extract_answer(completion, args.mode, task["choices"])
+        elapsed = clock() - started
         return {
+            "generation_seconds": elapsed, "do_sample": sample,
             **describe_path(path, depth), "completion": completion,
             "extracted_answer": answer, "normalized_answer": answer if args.mode == "multiple_choice"
             else normalize_answer(answer),
@@ -136,6 +156,10 @@ def main():
     for idx, task in enumerate(tasks):
         if task["task_id"] in done:
             continue
+        task_started = clock()
+        # Stable per-task RNG regardless of sharding/resume; do not reseed each draw.
+        task_seed = args.seed + int(hashlib.sha256(task["task_id"].encode()).hexdigest()[:8], 16)
+        torch.manual_seed(task_seed)
         prompt = model_prompt(task, args.mode)
         predictor_input = task["question"] if args.predictor_input == "question" else prompt
         rendered = render_prompt(tokenizer, prompt, args.model_path)
@@ -144,6 +168,7 @@ def main():
         beams = decode_polar_to_actions(
             seg_logits[0], op_logits[0], threshold=args.seg_threshold,
             max_pack=args.max_pack, beam_size=args.beam_size, top_k_ops=args.top_k_ops)
+        predictor_seconds = clock() - task_started
         trace({"stage": "start_task", **task, "predictor_input": predictor_input,
                "rendered_model_input": rendered,
                "segmentation_logits": seg_logits[0].detach().float().cpu().tolist(),
@@ -172,12 +197,38 @@ def main():
                    "rank": len(candidates), **candidate})
             if len(candidates) >= args.top_k_paths:
                 break
+        base_samples = []
+        if args.base_sampling_k:
+            for sample_idx in range(len(candidates)):
+                draw = generate(list(range(depth)), rendered, task, sample=True)
+                base_samples.append(draw)
+                trace({"stage": "base_sampling", "task_id": task["task_id"],
+                       "rank": sample_idx + 1, **draw})
+        selection_started = clock()
+        selected, reason = select_candidate(base, candidates, args.selection_strategy)
+        selection_seconds = clock() - selection_started
+        generation_seconds = sum(c["generation_seconds"] for c in candidates)
+        timings = {
+            "base_greedy_seconds": base["generation_seconds"],
+            "predictor_seconds": predictor_seconds,
+            "polar_generation_seconds": generation_seconds,
+            "base_sampling_seconds": sum(c["generation_seconds"] for c in base_samples),
+            "selection_seconds": selection_seconds,
+            "verifier_seconds": 0.0,
+            "selected_pipeline_seconds": base["generation_seconds"] + predictor_seconds
+                + generation_seconds + selection_seconds,
+            "end_to_end_seconds": clock() - task_started,
+        }
         results.append({
             **task, "dataset_index": args.start_idx + idx,
             "predictor_input": predictor_input, "rendered_model_input": rendered,
             "segmentation_logits": seg_logits[0].detach().float().cpu().tolist(),
             "operation_logits": op_logits[0].detach().float().cpu().tolist(),
             "base": base, "candidates": candidates,
+            "base_samples": base_samples, "selected": selected,
+            "requested_sampling_k": args.base_sampling_k,
+            "selection_strategy": args.selection_strategy, "selection_reason": reason,
+            "timings": timings,
         })
         done.add(task["task_id"])
         save("partial")

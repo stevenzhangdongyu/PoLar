@@ -63,6 +63,10 @@ def build_parser():
 
 def main():
     args = build_parser().parse_args()
+    if args.base_sampling_k < 0 or (args.base_sampling_k and args.base_sampling_k != args.top_k_paths):
+        raise ValueError("base_sampling_k must be 0 or equal top_k_paths.")
+    if args.temperature <= 0 or not 0 < args.top_p <= 1:
+        raise ValueError("temperature > 0 and 0 < top_p <= 1 required.")
     out = Path(args.output_dir).resolve()
     manifest_path = out / "manifest.json"
     if args.merge_only:
@@ -107,7 +111,8 @@ def main():
     forwarded = ("model_path", "checkpoint_path", "mode", "predictor_input",
                  "max_new_tokens", "beam_size", "top_k_ops", "top_k_paths",
                  "seg_threshold", "max_pack", "embedding_model_name",
-                 "polar_d_model", "polar_heads", "polar_layers", "seed")
+                 "polar_d_model", "polar_heads", "polar_layers", "seed",
+                 "selection_strategy", "base_sampling_k", "temperature", "top_p")
     running, failures = [], []
     print(f"[launch] tasks={len(tasks)} workers={workers} output={out}", flush=True)
     try:
