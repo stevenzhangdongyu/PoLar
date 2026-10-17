@@ -3,14 +3,13 @@
 import argparse
 import json
 from pathlib import Path
-import random
 
 import torch
 from torch.utils.data import DataLoader, Subset
 
 from polar.selector import (
     MLPPathSelector, PathSelectorDataset, collate_selector,
-    multi_positive_listwise_loss, selector_metrics,
+    group_split_indices, multi_positive_listwise_loss, selector_metrics,
 )
 from polar.config import infer_original_depth, set_random_seed
 
@@ -36,17 +35,6 @@ def build_parser():
     p.add_argument("--skip_all_wrong", action="store_true")
     p.add_argument("--local_files_only", action="store_true")
     return p
-
-
-def split_indices(n, val_ratio, test_ratio, seed):
-    idx = list(range(n))
-    random.Random(seed).shuffle(idx)
-    n_test = int(round(n * test_ratio))
-    n_val = int(round(n * val_ratio))
-    test = idx[:n_test]
-    val = idx[n_test:n_test + n_val]
-    train = idx[n_test + n_val:]
-    return train, val, test
 
 
 def evaluate(model, loader, device):
@@ -84,7 +72,7 @@ def main():
         include_all_wrong=not args.skip_all_wrong,
         max_examples=args.max_examples,
     )
-    train_idx, val_idx, test_idx = split_indices(len(dataset), args.val_ratio, args.test_ratio, args.seed)
+    train_idx, val_idx, test_idx = group_split_indices(dataset, args.val_ratio, args.test_ratio, args.seed)
     loaders = {}
     for name, ids, shuffle in (("train", train_idx, True), ("val", val_idx, False), ("test", test_idx, False)):
         if ids:

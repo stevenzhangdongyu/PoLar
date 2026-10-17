@@ -34,6 +34,31 @@ def task_text(row: Dict[str, Any]) -> str:
                or row.get("user") or row.get("task_id") or "")
 
 
+def group_split_indices(dataset: "PathSelectorDataset", val_ratio: float, test_ratio: float, seed: int):
+    """Split by stable task/question id so one problem never appears in multiple splits."""
+    import random
+    groups: Dict[str, List[int]] = {}
+    for i, ex in enumerate(dataset.examples):
+        key = str(ex.meta.get("task_id") or f"{ex.meta.get('source')}:{ex.meta.get('idx')}")
+        groups.setdefault(key, []).append(i)
+    keys = list(groups)
+    random.Random(seed).shuffle(keys)
+    n = len(keys)
+    n_test = int(round(n * test_ratio))
+    n_val = int(round(n * val_ratio))
+    test_keys = set(keys[:n_test])
+    val_keys = set(keys[n_test:n_test + n_val])
+    train, val, test = [], [], []
+    for key, ids in groups.items():
+        if key in test_keys:
+            test.extend(ids)
+        elif key in val_keys:
+            val.extend(ids)
+        else:
+            train.extend(ids)
+    return train, val, test
+
+
 def path_features(path: List[int], depth: int, *, rank: int, score: float, is_base: bool) -> List[float]:
     counts = Counter(path)
     skipped = [i for i in range(depth) if counts[i] == 0]

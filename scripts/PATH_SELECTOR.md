@@ -116,3 +116,63 @@ python3 scripts/eval_path_selector.py \
 3. 默认随机 split，不是严格按数据源/文章分组。正式实验应显式准备 train/val/test 文件。
 4. 当前 loss 对 all-wrong 样本无梯度。若要学习“回退/拒绝”，需要增加 reject 头或 margin loss。
 5. 训练出的 selector 目前只做离线选择；要真正接入在线推理，需要在生成前用相同 feature 构造逻辑对 paths 打分。
+
+## 数学训练、跨域测试 pipeline
+
+为了避免 “TriviaQA 训练、TriviaQA 测试” 的泄漏，推荐先在数学题上构造
+selector 训练数据，然后固定 selector 去测试 QA/code。
+
+数学 selector 数据生成会执行：
+
+```text
+每道数学题
+  -> POLAR predictor 生成 top-5 paths
+  -> Base + top-5 各自 greedy 生成数学答案
+  -> 用数学 evaluator 判 exact_match
+  -> 写出与 QA/HumanEval 相同格式的 merged_results.json
+```
+
+一键流程：
+
+```bash
+cd /home/z00894149/polar_dev/PoLar
+
+GPUS="0 1 2 3 4 5 6 7" WORKERS_PER_GPU=2 \
+MATH_LIMIT=2000 MAX_NEW_TOKENS=2048 NUM_EPOCHS=5 \
+HF_LOCAL_FILES_ONLY=1 TRANSFORMERS_OFFLINE=1 \
+bash scripts/run_math_selector_pipeline.sh \
+  /home/z00894149/Qwen2.5-3B-Instruct \
+  /home/z00894149/polar_policy_epochs20_bs16_lr0.0001_amp_mpps50_seed42_all_diffs.pt \
+  /home/z00894149/raw_data/unique_inputs_all_levels/dart_math_diff_5_unique_limit-1.json \
+  /home/z00894149/polar_dev/selector_math_pipeline_diff5 \
+  /home/z00894149/polar_dev/qa_all_triviaqa_sampling_vs_polar_k5_alldiff_magen50/merged_results.json \
+  /home/z00894149/polar_dev/code_all_sampling_vs_polar_k5_alldiff_magen50/merged_results.json
+```
+
+也可以分步：
+
+```bash
+bash scripts/run_math_selector_data_multiworker.sh \
+  /home/z00894149/Qwen2.5-3B-Instruct \
+  /home/z00894149/polar_policy_epochs20_bs16_lr0.0001_amp_mpps50_seed42_all_diffs.pt \
+  /home/z00894149/raw_data/unique_inputs_all_levels/dart_math_diff_5_unique_limit-1.json \
+  /home/z00894149/polar_dev/math_selector_data_diff5
+
+bash scripts/run_train_path_selector.sh \
+  /home/z00894149/Qwen2.5-3B-Instruct \
+  /home/z00894149/polar_dev/selector_outputs/math_diff5_mlp \
+  /home/z00894149/polar_dev/math_selector_data_diff5/merged_results.json
+```
+
+然后对任意未参与训练的 eval JSON 做泛化测试：
+
+```bash
+python3 scripts/eval_path_selector.py \
+  --checkpoint /home/z00894149/polar_dev/selector_outputs/math_diff5_mlp/selector_mlp_best.pt \
+  --eval_json /home/z00894149/polar_dev/qa_all_triviaqa_sampling_vs_polar_k5_alldiff_magen50/merged_results.json \
+  --output_json /home/z00894149/polar_dev/selector_outputs/math_diff5_mlp/eval_triviaqa.json \
+  --local_files_only
+```
+
+注意：数学数据生成需要实际跑 `Base + 5 paths`，成本大约是普通 predictor eval 的
+同量级甚至更高。先用 `MATH_LIMIT=100` 做 smoke test，确认格式和准确率统计没问题。
