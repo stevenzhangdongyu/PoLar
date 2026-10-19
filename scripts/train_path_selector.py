@@ -33,6 +33,8 @@ def build_parser():
     p.add_argument("--test_ratio", type=float, default=0.1)
     p.add_argument("--max_examples", type=int, default=0)
     p.add_argument("--skip_all_wrong", action="store_true")
+    p.add_argument("--train_mode", choices=("standard", "repair"), default="standard",
+                   help="repair = Base wrong and at least one POLAR path correct; Base is masked.")
     p.add_argument("--local_files_only", action="store_true")
     return p
 
@@ -40,7 +42,8 @@ def build_parser():
 def evaluate(model, loader, device):
     model.eval()
     total_loss, total_n = 0.0, 0
-    sums = {"selector_acc": 0.0, "base_acc": 0.0, "oracle_acc": 0.0, "all_wrong_rate": 0.0}
+    sums = {"selector_acc": 0.0, "base_acc": 0.0, "oracle_acc": 0.0,
+            "all_wrong_rate": 0.0, "base_select_rate": 0.0}
     with torch.no_grad():
         for batch in loader:
             logits = model(batch["texts"], batch["features"].to(device), batch["mask"].to(device))
@@ -70,6 +73,7 @@ def main():
         depth=depth,
         max_polar_paths=args.max_polar_paths,
         include_all_wrong=not args.skip_all_wrong,
+        train_mode=args.train_mode,
         max_examples=args.max_examples,
     )
     train_idx, val_idx, test_idx = group_split_indices(dataset, args.val_ratio, args.test_ratio, args.seed)

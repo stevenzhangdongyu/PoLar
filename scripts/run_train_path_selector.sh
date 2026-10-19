@@ -23,6 +23,7 @@ ARGS+=(
   --test_ratio "${TEST_RATIO:-0.1}"
   --seed "${SEED:-42}"
   --max_examples "${MAX_EXAMPLES:-0}"
+  --train_mode "${TRAIN_MODE:-standard}"
 )
 if [[ "${SKIP_ALL_WRONG:-0}" == "1" ]]; then ARGS+=(--skip_all_wrong); fi
 if [[ "${HF_LOCAL_FILES_ONLY:-0}" == "1" ]]; then ARGS+=(--local_files_only); fi

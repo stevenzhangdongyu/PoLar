@@ -41,6 +41,11 @@ class Tests(unittest.TestCase):
             self.assertEqual(ex.features.shape, (6, ds.feature_dim))
             self.assertTrue(ex.mask[:3].all())
             self.assertFalse(ex.mask[3:].any())
+            repair_ds = PathSelectorDataset([str(source)], depth=3, train_mode="repair")
+            rex = repair_ds[0]
+            self.assertFalse(bool(rex.mask[0]))
+            self.assertEqual(float(rex.labels[0]), 0.0)
+            self.assertTrue(rex.meta["polar_has_correct"])
 
     def test_loss_and_metrics(self):
         logits = torch.tensor([[0.0, 1.0, 2.0], [3.0, 2.0, 1.0]])
@@ -51,6 +56,7 @@ class Tests(unittest.TestCase):
         m = selector_metrics(logits, labels, mask)
         self.assertEqual(m["selector_acc"], 1.0)
         self.assertEqual(m["base_acc"], 0.5)
+        self.assertEqual(m["base_select_rate"], 0.5)
         empty_labels = torch.zeros_like(labels)
         self.assertEqual(float(multi_positive_listwise_loss(logits, empty_labels, mask)), 0.0)
 

@@ -60,6 +60,63 @@ L = -log sum_{j in correct candidates} softmax(score)_j
 默认保留 all-wrong 样本，但它们对当前 loss 没有梯度，只用于评估 oracle gap；
 可以设置 `SKIP_ALL_WRONG=1` 跳过。
 
+## 方案 A：repair-only 训练
+
+如果普通 selector 一直选择 Base，可以使用 repair 模式：
+
+```text
+只保留训练样本：
+  Base 错
+  至少一个 POLAR candidate 对
+
+训练时：
+  mask 掉 candidate 0 = Base
+  只在 POLAR candidates 里选正确路径
+```
+
+这不会直接得到完整生产策略。它回答的是更窄的问题：
+
+```text
+当我们已经决定离开 Base 时，selector 能不能从非 Base paths 中选出修复路径？
+```
+
+训练命令：
+
+```bash
+cd /home/z00894149/polar_dev/PoLar
+
+HF_LOCAL_FILES_ONLY=1 TRANSFORMERS_OFFLINE=1 \
+TRAIN_MODE=repair NUM_EPOCHS=5 BATCH_SIZE=32 LEARNING_RATE=1e-4 \
+bash scripts/run_train_path_selector.sh \
+  /home/z00894149/Qwen2.5-3B-Instruct \
+  /home/z00894149/polar_dev/selector_outputs/math_repair_mlp \
+  /home/z00894149/polar_dev/math_selector_data_diff5/merged_results.json
+```
+
+评估有两种：
+
+```bash
+# 跟随 checkpoint 的 repair 语义：Base 被 mask；在全部 eval 样本上强制选非 Base。
+python3 scripts/eval_path_selector.py \
+  --checkpoint /home/z00894149/polar_dev/selector_outputs/math_repair_mlp/selector_mlp_best.pt \
+  --eval_json /home/z00894149/polar_dev/qa_all_triviaqa_sampling_vs_polar_k5_alldiff_magen50/merged_results.json \
+  --output_json /home/z00894149/polar_dev/selector_outputs/math_repair_mlp/eval_triviaqa_force_nonbase.json \
+  --local_files_only
+
+# 只看 repair-eligible 子集：Base 错且至少一个 POLAR path 对。
+python3 scripts/eval_path_selector.py \
+  --checkpoint /home/z00894149/polar_dev/selector_outputs/math_repair_mlp/selector_mlp_best.pt \
+  --eval_json /home/z00894149/polar_dev/qa_all_triviaqa_sampling_vs_polar_k5_alldiff_magen50/merged_results.json \
+  --eval_mode repair_subset \
+  --output_json /home/z00894149/polar_dev/selector_outputs/math_repair_mlp/eval_triviaqa_repair_subset.json \
+  --local_files_only
+```
+
+重点看 `repair_subset` 里的 `selector_accuracy / oracle_accuracy`。如果这里很低，
+说明 path-only MLP 甚至无法在“确实有可修复 path”的样本里找到它；这时应该升级
+模型结构或加入 answer-aware verifier。如果这里高，但全量强制非 Base 退化，
+说明还缺一个 gate 来判断什么时候离开 Base。
+
 ## 训练命令
 
 ```bash

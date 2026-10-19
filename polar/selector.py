@@ -118,15 +118,23 @@ class PathSelectorDataset(Dataset):
         depth: int,
         max_polar_paths: int = 5,
         include_all_wrong: bool = True,
+        train_mode: str = "standard",
         max_examples: int = 0,
     ) -> None:
+        if train_mode not in {"standard", "repair"}:
+            raise ValueError("train_mode must be standard or repair.")
         self.depth = int(depth)
         self.max_candidates = int(max_polar_paths) + 1
+        self.train_mode = train_mode
         examples: List[SelectorExample] = []
         for source in eval_jsons:
             for idx, row in enumerate(load_eval_rows(source)):
                 paths, scores, labels, ranks = build_candidates(row, self.depth, max_polar_paths)
                 if len(paths) < 2 or (not include_all_wrong and not any(labels)):
+                    continue
+                base_correct = bool(labels[0]) if labels else False
+                polar_has_correct = any(labels[1:])
+                if train_mode == "repair" and (base_correct or not polar_has_correct):
                     continue
                 feats = [
                     path_features(p, self.depth, rank=r, score=s, is_base=(i == 0))
@@ -140,14 +148,18 @@ class PathSelectorDataset(Dataset):
                 padded[:keep] = torch.tensor(feats[:keep], dtype=torch.float32)
                 label_t[:keep] = torch.tensor(labels[:keep], dtype=torch.float32)
                 mask[:keep] = True
+                if train_mode == "repair":
+                    label_t[0] = 0.0
+                    mask[0] = False
                 examples.append(SelectorExample(
                     text=task_text(row),
                     features=padded,
                     labels=label_t,
                     mask=mask,
                     meta={"source": source, "idx": idx, "task_id": row.get("task_id"),
-                          "base_correct": bool(labels[0]) if labels else False,
-                          "num_candidates": keep},
+                          "base_correct": base_correct,
+                          "polar_has_correct": polar_has_correct,
+                          "num_candidates": keep, "train_mode": train_mode},
                 ))
                 if max_examples and len(examples) >= max_examples:
                     break
@@ -233,17 +245,19 @@ def selector_metrics(logits: torch.Tensor, labels: torch.Tensor, mask: torch.Ten
     pred = logits.argmax(dim=1).detach().cpu()
     labels_cpu = labels.detach().cpu()
     mask_cpu = mask.detach().cpu()
-    selected_correct, base_correct = [], []
+    selected_correct, base_correct, selected_base = [], [], []
     oracle, all_wrong = [], []
     for i, j in enumerate(pred.tolist()):
         selected_correct.append(float(labels_cpu[i, j] > 0.5 and mask_cpu[i, j]))
         base_correct.append(float(labels_cpu[i, 0] > 0.5))
         oracle.append(float((labels_cpu[i] * mask_cpu[i].float()).max() > 0.5))
         all_wrong.append(float((labels_cpu[i] * mask_cpu[i].float()).sum() == 0))
+        selected_base.append(float(j == 0))
     n = max(1, len(selected_correct))
     return {
         "selector_acc": sum(selected_correct) / n,
         "base_acc": sum(base_correct) / n,
         "oracle_acc": sum(oracle) / n,
         "all_wrong_rate": sum(all_wrong) / n,
+        "base_select_rate": sum(selected_base) / n,
     }

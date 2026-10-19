@@ -16,6 +16,9 @@ def build_parser():
     p.add_argument("--eval_json", action="append", required=True)
     p.add_argument("--output_json", required=True)
     p.add_argument("--batch_size", type=int, default=64)
+    p.add_argument("--eval_mode", choices=("checkpoint", "standard", "repair", "repair_subset"),
+                   default="checkpoint",
+                   help="repair masks Base; repair_subset also keeps only Base-wrong/POLAR-correct rows.")
     p.add_argument("--local_files_only", action="store_true")
     return p
 
@@ -28,12 +31,22 @@ def main():
         os.environ["TRANSFORMERS_OFFLINE"] = "1"
     ckpt = torch.load(args.checkpoint, map_location="cpu")
     cfg = ckpt["config"]
+    eval_mode = cfg.get("train_mode", "standard") if args.eval_mode == "checkpoint" else args.eval_mode
+    dataset_mode = "repair" if eval_mode in {"repair", "repair_subset"} else "standard"
     dataset = PathSelectorDataset(
         eval_jsons=args.eval_json,
         depth=int(ckpt["depth"]),
         max_polar_paths=int(cfg.get("max_polar_paths", 5)),
         include_all_wrong=True,
+        train_mode=dataset_mode,
     )
+    if eval_mode == "repair_subset":
+        dataset.examples = [
+            ex for ex in dataset.examples
+            if (not ex.meta.get("base_correct")) and ex.meta.get("polar_has_correct")
+        ]
+        if not dataset.examples:
+            raise ValueError("No repair-subset examples in eval data.")
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, collate_fn=collate_selector)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = MLPPathSelector(
@@ -44,7 +57,7 @@ def main():
     ).to(device)
     model.load_state_dict(ckpt["model_state"])
     model.eval()
-    rows, selected_correct, base_correct, oracle_correct = [], [], [], []
+    rows, selected_correct, base_correct, oracle_correct, selected_base = [], [], [], [], []
     with torch.no_grad():
         offset = 0
         for batch in loader:
@@ -60,6 +73,7 @@ def main():
                 selected_correct.append(ok)
                 base_correct.append(bok)
                 oracle_correct.append(ook)
+                selected_base.append(j == 0)
                 rows.append({"meta": meta, "selected_index": j, "selected_correct": ok,
                              "base_correct": bok, "oracle_correct": ook,
                              "scores": logits[i].detach().cpu().tolist(),
@@ -77,8 +91,11 @@ def main():
         "base_accuracy": sum(base_correct) / n if n else None,
         "oracle_correct": sum(oracle_correct),
         "oracle_accuracy": sum(oracle_correct) / n if n else None,
+        "selected_base_count": sum(selected_base),
+        "base_select_rate": sum(selected_base) / n if n else None,
         "repair_count": repaired,
         "degradation_count": degraded,
+        "eval_mode": eval_mode,
         "repair_rate_given_base_wrong": repaired / max(1, sum(not x for x in base_correct)),
         "degradation_rate_given_base_correct": degraded / max(1, sum(base_correct)),
         "note": "Offline path selection over already generated candidates; no generation rerun.",
