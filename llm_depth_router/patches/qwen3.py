@@ -6,6 +6,11 @@ from transformers.modeling_outputs import BaseModelOutputWithPast
 from transformers.utils import logging
 from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
 from transformers.processing_utils import Unpack
+from llm_depth_router.patches.cache_mode import (
+    cache_layer_index,
+    get_custom_path_cache_mode,
+    temporary_attention_layer_idx,
+)
 
 logger = logging.get_logger(__name__)
 
@@ -71,21 +76,26 @@ def _qwen3_forward_patch(
     all_hidden_states = () if output_hidden_states else None
     all_self_attns = () if output_attentions else None
 
-    for decoder_layer in [self.layers[i] for i in self.custom_path]:
+    cache_mode = get_custom_path_cache_mode(self)
+    logger.debug(f"using custom_path {self.custom_path} cache_mode={cache_mode}")
+    for execution_idx, physical_layer_idx in enumerate(self.custom_path):
+        decoder_layer = self.layers[physical_layer_idx]
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
 
-        layer_outputs = decoder_layer(
-            hidden_states,
-            attention_mask=causal_mask,
-            position_ids=position_ids,
-            past_key_value=past_key_values,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
-            cache_position=cache_position,
-            position_embeddings=position_embeddings,
-            **flash_attn_kwargs,
-        )
+        cache_idx = cache_layer_index(cache_mode, physical_layer_idx, execution_idx)
+        with temporary_attention_layer_idx(decoder_layer, cache_idx):
+            layer_outputs = decoder_layer(
+                hidden_states,
+                attention_mask=causal_mask,
+                position_ids=position_ids,
+                past_key_value=past_key_values,
+                output_attentions=output_attentions,
+                use_cache=use_cache,
+                cache_position=cache_position,
+                position_embeddings=position_embeddings,
+                **flash_attn_kwargs,
+            )
 
         hidden_states = layer_outputs[0]
 
@@ -106,4 +116,3 @@ def _qwen3_forward_patch(
 
 
 __all__ = ["_qwen3_forward_patch"]
-

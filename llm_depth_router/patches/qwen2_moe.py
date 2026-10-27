@@ -4,6 +4,11 @@ from typing import Optional, Union, List, Tuple
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.modeling_outputs import MoeModelOutputWithPast
 from transformers.utils import logging
+from llm_depth_router.patches.cache_mode import (
+    cache_layer_index,
+    get_custom_path_cache_mode,
+    temporary_attention_layer_idx,
+)
 
 logger = logging.get_logger(__name__)
 
@@ -83,35 +88,41 @@ def _qwen2_moe_forward_patch(
     all_router_logits = () if output_router_logits else None
     next_decoder_cache = None
 
-    for decoder_layer in [self.layers[i] for i in self.custom_path]:
+    cache_mode = get_custom_path_cache_mode(self)
+    logger.debug(f"using custom_path {self.custom_path} cache_mode={cache_mode}")
+    for execution_idx, physical_layer_idx in enumerate(self.custom_path):
+        decoder_layer = self.layers[physical_layer_idx]
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
 
+        cache_idx = cache_layer_index(cache_mode, physical_layer_idx, execution_idx)
         if self.gradient_checkpointing and self.training:
-            layer_outputs = self._gradient_checkpointing_func(
-                decoder_layer.__call__,
-                hidden_states,
-                causal_mask,
-                position_ids,
-                past_key_values,
-                output_attentions,
-                output_router_logits,
-                use_cache,
-                cache_position,
-                position_embeddings,
-            )
+            with temporary_attention_layer_idx(decoder_layer, cache_idx):
+                layer_outputs = self._gradient_checkpointing_func(
+                    decoder_layer.__call__,
+                    hidden_states,
+                    causal_mask,
+                    position_ids,
+                    past_key_values,
+                    output_attentions,
+                    output_router_logits,
+                    use_cache,
+                    cache_position,
+                    position_embeddings,
+                )
         else:
-            layer_outputs = decoder_layer(
-                hidden_states,
-                attention_mask=causal_mask,
-                position_ids=position_ids,
-                past_key_value=past_key_values,
-                output_attentions=output_attentions,
-                output_router_logits=output_router_logits,
-                use_cache=use_cache,
-                cache_position=cache_position,
-                position_embeddings=position_embeddings,
-            )
+            with temporary_attention_layer_idx(decoder_layer, cache_idx):
+                layer_outputs = decoder_layer(
+                    hidden_states,
+                    attention_mask=causal_mask,
+                    position_ids=position_ids,
+                    past_key_value=past_key_values,
+                    output_attentions=output_attentions,
+                    output_router_logits=output_router_logits,
+                    use_cache=use_cache,
+                    cache_position=cache_position,
+                    position_embeddings=position_embeddings,
+                )
 
         hidden_states = layer_outputs[0]
 
@@ -144,4 +155,3 @@ def _qwen2_moe_forward_patch(
 
 
 __all__ = ["_qwen2_moe_forward_patch"]
-

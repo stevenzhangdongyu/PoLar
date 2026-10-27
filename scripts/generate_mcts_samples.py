@@ -256,6 +256,7 @@ def score_path(
     question: str,
     gt_ans: str,
     max_new_tokens: int,
+    kv_cache_mode: str,
 ) -> float:
     if not path:
         return 0.0
@@ -269,6 +270,7 @@ def score_path(
             gt=gt_ans,
             max_new_tokens=max_new_tokens,
             temperature=0.0,
+            kv_cache_mode=kv_cache_mode,
         )
     )
 
@@ -289,6 +291,7 @@ def run_search_for_sample(
     length_penalty: float,
     max_new_tokens: int,
     max_path_len_ratio: float,
+    kv_cache_mode: str,
     rng: random.Random,
 ) -> Dict[str, Any]:
     root_path: Path = tuple(range(depth))
@@ -308,6 +311,7 @@ def run_search_for_sample(
                 question=question,
                 gt_ans=gt_ans,
                 max_new_tokens=max_new_tokens,
+                kv_cache_mode=kv_cache_mode,
             )
             if cache[path] > 0:
                 valid.append(path)
@@ -381,6 +385,7 @@ def run_search_for_sample(
             "max_block": max_block,
             "max_repeat": max_repeat,
             "max_path_len_ratio": max_path_len_ratio,
+            "polar_kv_cache_mode": kv_cache_mode,
         },
     }
 
@@ -427,6 +432,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--length_penalty", type=float, default=0.05)
     parser.add_argument("--max_path_len_ratio", type=float, default=1.15)
     parser.add_argument("--max_new_tokens", type=int, default=50)
+    parser.add_argument(
+        "--polar_kv_cache_mode",
+        choices=["layer", "execution"],
+        default=os.environ.get("POLAR_KV_CACHE_MODE", "layer"),
+        help=(
+            "KV cache indexing for custom layer paths. "
+            "`layer` keeps legacy physical-layer cache slots; "
+            "`execution` allocates a distinct cache slot for every layer execution step."
+        ),
+    )
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--save_every", type=int, default=1, help="Write partial output every N processed samples.")
@@ -436,6 +451,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
+    os.environ["POLAR_KV_CACHE_MODE"] = str(args.polar_kv_cache_mode)
     set_random_seed(args.seed)
     rng = random.Random(args.seed)
     args.original_depth = int(infer_original_depth(args.model_path))
@@ -513,6 +529,7 @@ def main() -> None:
             length_penalty=args.length_penalty,
             max_new_tokens=args.max_new_tokens,
             max_path_len_ratio=args.max_path_len_ratio,
+            kv_cache_mode=args.polar_kv_cache_mode,
             rng=rng,
         )
         generated.append(result)

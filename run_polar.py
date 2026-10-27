@@ -80,6 +80,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
     evaluation.add_argument("--top_k_paths", type=int, default=5, help="Number of candidate paths to evaluate per sample")
     evaluation.add_argument("--len_penalty", type=float, default=0.0, help="Decode rerank length penalty")
     evaluation.add_argument("--eval_cache_breakdown", action="store_true", help="Print and save cache vs online eval breakdown")
+    evaluation.add_argument(
+        "--polar_kv_cache_mode",
+        type=str,
+        default=os.environ.get("POLAR_KV_CACHE_MODE", "layer"),
+        choices=["layer", "execution"],
+        help=(
+            "KV cache indexing for custom layer paths. "
+            "`layer` keeps the legacy physical-layer cache slots; "
+            "`execution` gives every path execution step its own cache slot, "
+            "so looped layers do not overwrite/reuse the first visit's KV."
+        ),
+    )
 
     output = parser.add_argument_group("logging and output")
     output.add_argument("--use_wandb", action="store_true", help="Enable wandb logging for training metrics")
@@ -116,6 +128,8 @@ def normalize_args(args):
     if args.use_wandb and args.wandb_dir:
         os.environ["WANDB_DIR"] = os.path.abspath(os.path.expanduser(args.wandb_dir))
         os.makedirs(os.environ["WANDB_DIR"], exist_ok=True)
+
+    os.environ["POLAR_KV_CACHE_MODE"] = str(getattr(args, "polar_kv_cache_mode", "layer") or "layer")
 
     args.original_depth = int(infer_original_depth(args.model_path))
     os.makedirs(args.save_dir, exist_ok=True)

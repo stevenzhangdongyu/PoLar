@@ -34,6 +34,7 @@ set -euo pipefail
 #   QUESTION_FIELD=question
 #   ANSWER_FIELD=gt_ans
 #   HF_LOCAL_FILES_ONLY=1
+#   POLAR_KV_CACHE_MODE=layer    # layer = legacy, execution = separate KV slot per path execution step.
 #   DEDUP_MERGE=1
 
 MODEL_PATH="${1:?model_path is required}"
@@ -55,6 +56,7 @@ SEED="${SEED:-42}"
 QUESTION_FIELD="${QUESTION_FIELD:-question}"
 ANSWER_FIELD="${ANSWER_FIELD:-gt_ans}"
 HF_LOCAL_FILES_ONLY="${HF_LOCAL_FILES_ONLY:-1}"
+POLAR_KV_CACHE_MODE="${POLAR_KV_CACHE_MODE:-layer}"
 DEDUP_MERGE="${DEDUP_MERGE:-1}"
 
 if [[ ! -f "${INPUT_JSON}" ]]; then
@@ -116,6 +118,7 @@ echo "[resume-json] input_count=${INPUT_COUNT} total_limit=${TOTAL_LIMIT} simula
 echo "[resume-json] gpus=${GPUS} workers_per_gpu=${WORKERS_PER_GPU} total_workers=${TOTAL_WORKERS}"
 echo "[resume-json] output_dir=${OUTPUT_DIR}"
 echo "[resume-json] max_new_tokens=${MAX_NEW_TOKENS} max_block=${MAX_BLOCK} max_repeat=${MAX_REPEAT}"
+echo "[resume-json] polar_kv_cache_mode=${POLAR_KV_CACHE_MODE}"
 echo "[resume-json] NOTE: do not change worker count/output_dir between interrupted and resumed runs."
 
 START=0
@@ -167,6 +170,7 @@ PY
     HF_HUB_OFFLINE="${HF_LOCAL_FILES_ONLY}" \
     TRANSFORMERS_OFFLINE="${HF_LOCAL_FILES_ONLY}" \
     HF_DATASETS_OFFLINE="${HF_LOCAL_FILES_ONLY}" \
+    POLAR_KV_CACHE_MODE="${POLAR_KV_CACHE_MODE}" \
     python3 scripts/generate_mcts_samples.py \
       --model_path "${MODEL_PATH}" \
       --input_json "${INPUT_JSON}" \
@@ -182,6 +186,7 @@ PY
       --max_path_len_ratio "${MAX_PATH_LEN_RATIO}" \
       --length_penalty "${LENGTH_PENALTY}" \
       --max_new_tokens "${MAX_NEW_TOKENS}" \
+      --polar_kv_cache_mode "${POLAR_KV_CACHE_MODE}" \
       --device cuda \
       --seed "${WORKER_SEED}" \
       --resume \

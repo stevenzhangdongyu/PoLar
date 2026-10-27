@@ -35,6 +35,7 @@ set -euo pipefail
 #   QUESTION_FIELD=question
 #   ANSWER_FIELD=gt_ans
 #   HF_LOCAL_FILES_ONLY=1
+#   POLAR_KV_CACHE_MODE=layer    # layer = legacy, execution = separate KV slot per path execution step.
 #   MAX_TOTAL_WORKERS=0   # 0 means no cap; otherwise cap workers to at most this number.
 
 MODEL_PATH="${1:?model_path is required}"
@@ -55,6 +56,7 @@ SEED="${SEED:-42}"
 QUESTION_FIELD="${QUESTION_FIELD:-question}"
 ANSWER_FIELD="${ANSWER_FIELD:-gt_ans}"
 HF_LOCAL_FILES_ONLY="${HF_LOCAL_FILES_ONLY:-1}"
+POLAR_KV_CACHE_MODE="${POLAR_KV_CACHE_MODE:-layer}"
 MAX_TOTAL_WORKERS="${MAX_TOTAL_WORKERS:-0}"
 
 if [[ ! -f "${INPUT_JSON}" ]]; then
@@ -108,6 +110,7 @@ echo "[launch-json] input_json=${INPUT_JSON}"
 echo "[launch-json] input_count=${INPUT_COUNT} total_limit=${TOTAL_LIMIT} simulations=${SIMULATIONS}"
 echo "[launch-json] gpus=${GPUS} workers_per_gpu=${WORKERS_PER_GPU} total_workers=${TOTAL_WORKERS}"
 echo "[launch-json] output_dir=${OUTPUT_DIR}"
+echo "[launch-json] polar_kv_cache_mode=${POLAR_KV_CACHE_MODE}"
 
 START=0
 GLOBAL_RANK=0
@@ -140,6 +143,7 @@ for GPU_RANK in "${!GPU_ARRAY[@]}"; do
     HF_HUB_OFFLINE="${HF_LOCAL_FILES_ONLY}" \
     TRANSFORMERS_OFFLINE="${HF_LOCAL_FILES_ONLY}" \
     HF_DATASETS_OFFLINE="${HF_LOCAL_FILES_ONLY}" \
+    POLAR_KV_CACHE_MODE="${POLAR_KV_CACHE_MODE}" \
     python3 scripts/generate_mcts_samples.py \
       --model_path "${MODEL_PATH}" \
       --input_json "${INPUT_JSON}" \
@@ -155,6 +159,7 @@ for GPU_RANK in "${!GPU_ARRAY[@]}"; do
       --max_path_len_ratio "${MAX_PATH_LEN_RATIO}" \
       --length_penalty "${LENGTH_PENALTY}" \
       --max_new_tokens "${MAX_NEW_TOKENS}" \
+      --polar_kv_cache_mode "${POLAR_KV_CACHE_MODE}" \
       --device cuda \
       --seed "${WORKER_SEED}" \
       --resume \

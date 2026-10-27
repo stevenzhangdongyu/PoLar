@@ -30,6 +30,31 @@ bash scripts/run_instruction_multiworker.sh \
 - `summary.json`：只含生成统计，不宣称自动评分。
 - `*.ifeval_predictions.jsonl`：每条 Base/POLAR 回复一行，保留 prompt、instruction_id_list、kwargs。
 
+生成完成后，先从 `merged_results.json` 导出官方 evaluator 常用的“每题一条 response”
+文件：
+
+```bash
+python3 scripts/export_ifeval_responses.py \
+  --merged_results /home/z00894149/polar_dev/ifeval_polar_k5/merged_results.json \
+  --output_dir /home/z00894149/polar_dev/ifeval_polar_k5/responses \
+  --top_k 5
+```
+
+会得到：
+
+```text
+responses/base.responses.jsonl
+responses/polar_rank1.responses.jsonl
+responses/polar_rank2.responses.jsonl
+...
+responses/polar_rank5.responses.jsonl
+responses/all_candidates.not_for_official_eval.jsonl
+```
+
+`base.responses.jsonl` 和每个 `polar_rank*.responses.jsonl` 都是一题一条，可以送入
+官方 IFEval evaluator。`all_candidates.not_for_official_eval.jsonl` 是全候选审计文件，
+一题多条，不能直接作为官方输入。
+
 注意：脚本不内置官方 IFEval checker，因为不同下载版本的 evaluator 文件路径可能不同。
 请用官方 IFEval 评测代码读取 `ifeval_predictions.jsonl`。若要对比 Base/POLAR，需要按
 `method` 和 `candidate_rank` 分组分别跑 checker。POLAR top-k oracle 需要定义“任一候选通过”

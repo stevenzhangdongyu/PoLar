@@ -5,6 +5,7 @@ from typing import List
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers import logging
+from llm_depth_router.patches.cache_mode import normalize_cache_mode
 
 logging.set_verbosity_error()
 
@@ -116,10 +117,13 @@ def get_tokenizer(model_name: str, custom_chat_template=None):
     return tokenizer
 
 
-def setup_custom_path(model, path):
+def setup_custom_path(model, path, cache_mode=None):
     cls_name = type(model).__name__
     if cls_name not in SUPPORTED_FOR_CAUSAL_LM:
         raise ValueError(f"Unsupported release model wrapper `{cls_name}` for custom path execution.")
     if not hasattr(model, "model"):
         raise ValueError(f"Model wrapper `{cls_name}` does not expose `.model` for custom path execution.")
     model.model.custom_path = list(path)
+    if cache_mode is None:
+        cache_mode = os.environ.get("POLAR_KV_CACHE_MODE", "layer")
+    model.model.custom_path_cache_mode = normalize_cache_mode(cache_mode)

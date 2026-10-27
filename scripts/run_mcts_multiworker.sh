@@ -39,6 +39,7 @@ set -euo pipefail
 #   LENGTH_PENALTY=0.05
 #   SEED=42
 #   DEDUP_QUESTIONS=1
+#   POLAR_KV_CACHE_MODE=layer
 
 MODEL_PATH="${1:?model_path is required}"
 HF_DATASET="${2:?hf_dataset is required}"
@@ -59,6 +60,7 @@ LENGTH_PENALTY="${LENGTH_PENALTY:-0.05}"
 SEED="${SEED:-42}"
 HF_LOCAL_FILES_ONLY="${HF_LOCAL_FILES_ONLY:-1}"
 DEDUP_QUESTIONS="${DEDUP_QUESTIONS:-1}"
+POLAR_KV_CACHE_MODE="${POLAR_KV_CACHE_MODE:-layer}"
 
 mkdir -p "${OUTPUT_DIR}"
 
@@ -111,7 +113,7 @@ for GPU_RANK in "${!GPU_ARRAY[@]}"; do
       EXTRA_ARGS+=(--dedup_questions)
     fi
 
-    CUDA_VISIBLE_DEVICES="${GPU}" TOKENIZERS_PARALLELISM=false HF_LOCAL_FILES_ONLY="${HF_LOCAL_FILES_ONLY}" HF_HUB_OFFLINE="${HF_LOCAL_FILES_ONLY}" TRANSFORMERS_OFFLINE="${HF_LOCAL_FILES_ONLY}" HF_DATASETS_OFFLINE="${HF_LOCAL_FILES_ONLY}" python3 scripts/generate_mcts_samples.py \
+    CUDA_VISIBLE_DEVICES="${GPU}" TOKENIZERS_PARALLELISM=false HF_LOCAL_FILES_ONLY="${HF_LOCAL_FILES_ONLY}" HF_HUB_OFFLINE="${HF_LOCAL_FILES_ONLY}" TRANSFORMERS_OFFLINE="${HF_LOCAL_FILES_ONLY}" HF_DATASETS_OFFLINE="${HF_LOCAL_FILES_ONLY}" POLAR_KV_CACHE_MODE="${POLAR_KV_CACHE_MODE}" python3 scripts/generate_mcts_samples.py \
       --model_path "${MODEL_PATH}" \
       --hf_dataset "${HF_DATASET}" \
       --hf_split "${HF_SPLIT}" \
@@ -126,6 +128,7 @@ for GPU_RANK in "${!GPU_ARRAY[@]}"; do
       --max_path_len_ratio "${MAX_PATH_LEN_RATIO}" \
       --length_penalty "${LENGTH_PENALTY}" \
       --max_new_tokens "${MAX_NEW_TOKENS}" \
+      --polar_kv_cache_mode "${POLAR_KV_CACHE_MODE}" \
       --device cuda \
       --seed "${WORKER_SEED}" \
       --resume \

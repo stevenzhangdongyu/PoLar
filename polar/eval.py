@@ -120,6 +120,7 @@ def _online_eval_math_single(
     gt: str,
     max_new_tokens: int,
     temperature: float = 0.0,
+    kv_cache_mode: str = "layer",
 ) -> float:
     """
     Evaluate a candidate layer path by generating a boxed answer and checking it
@@ -135,7 +136,7 @@ def _online_eval_math_single(
     )
 
     # Apply depth-router custom path
-    setup_custom_path(model, transition)
+    setup_custom_path(model, transition, cache_mode=kv_cache_mode)
 
     # Generation
     if _is_qwen3_model_path(model_path):
@@ -355,6 +356,7 @@ def evaluate_polar(args):
                         gt=gt,
                         max_new_tokens=max_new_tokens,
                         temperature=0.0,
+                        kv_cache_mode=getattr(args, "polar_kv_cache_mode", "layer"),
                     )
 
                     if score == 1.0:
@@ -382,6 +384,7 @@ def evaluate_polar(args):
                 "n_valid_cache_paths": n_valid_cache_paths,
                 "initial_score": extract_initial_score(sample),
                 "_top_k_paths": args.top_k_paths,
+                "_polar_kv_cache_mode": getattr(args, "polar_kv_cache_mode", "layer"),
             })
 
         print(f"[Polar] diff{d} correct found rate: {total_correct}/{len(samples)} = {total_correct/max(1,len(samples)):.4f}")
