@@ -13,6 +13,7 @@ ARGS=(
   --max_total_workers "${MAX_TOTAL_WORKERS:-0}"
   --limit "${LIMIT:-0}"
   --max_new_tokens "${MAX_NEW_TOKENS:-1024}"
+  --polar_kv_cache_mode "${POLAR_KV_CACHE_MODE:-layer}"
   --beam_size "${BEAM_SIZE:-10}"
   --top_k_ops "${TOP_K_OPS:-2}"
   --top_k_paths "${TOP_K_PATHS:-5}"

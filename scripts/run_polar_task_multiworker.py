@@ -33,6 +33,7 @@ def build_parser():
     p.add_argument("--max_total_workers", type=int, default=0)
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--max_new_tokens", type=int, default=1024)
+    p.add_argument("--polar_kv_cache_mode", choices=("layer", "execution"), default="layer")
     p.add_argument("--beam_size", type=int, default=10)
     p.add_argument("--top_k_ops", type=int, default=2)
     p.add_argument("--top_k_paths", type=int, default=5)
@@ -119,6 +120,10 @@ def main():
     forwarded = ("model_path", "checkpoint_path", "max_new_tokens", "beam_size",
                  "top_k_ops", "top_k_paths", "seg_threshold", "max_pack",
                  "embedding_model_name", "polar_d_model", "polar_heads", "polar_layers", "seed")
+    if args.task_type == "instruction":
+        forwarded += ("polar_kv_cache_mode",)
+    elif args.polar_kv_cache_mode != "layer":
+        raise ValueError("polar_kv_cache_mode=execution is available for instruction tasks only.")
     running, failures = [], []
     print(f"[launch] {args.task_type} tasks={len(tasks)} workers={workers} output={out}", flush=True)
     try:

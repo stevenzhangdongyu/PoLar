@@ -129,9 +129,9 @@ def generate_completion(
     path: Sequence[int],
     task: Dict[str, Any],
     max_new_tokens: int,
-    *, sample=False, temperature=0.7, top_p=0.95,
+    *, sample=False, temperature=0.7, top_p=0.95, kv_cache_mode="layer",
 ) -> str:
-    setup_custom_path(model, list(path))
+    setup_custom_path(model, list(path), cache_mode=kv_cache_mode)
     rendered = apply_chat_template(tokenizer, model_path, model_prompt(task))
     inputs = tokenizer([rendered], return_tensors="pt").to(model.device)
     output_ids = model.generate(
@@ -245,6 +245,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--num_samples", type=int, default=0, help="0 means all selected tasks")
     p.add_argument("--save_json", required=True)
     p.add_argument("--max_new_tokens", type=int, default=512)
+    p.add_argument("--polar_kv_cache_mode", choices=("layer", "execution"), default="layer")
     p.add_argument("--beam_size", type=int, default=5)
     p.add_argument("--top_k_ops", type=int, default=2)
     p.add_argument("--top_k_paths", type=int, default=5)
@@ -301,7 +302,8 @@ def main() -> None:
         start = clock()
         text = generate_completion(model, tokenizer, args.model_path, path, task,
                                    args.max_new_tokens, sample=sample,
-                                   temperature=args.temperature, top_p=args.top_p)
+                                   temperature=args.temperature, top_p=args.top_p,
+                                   kv_cache_mode=args.polar_kv_cache_mode)
         return text, clock() - start
 
     results: List[Dict[str, Any]] = []
@@ -309,12 +311,15 @@ def main() -> None:
     if args.resume_existing and Path(args.save_json).is_file():
         try:
             previous = json.loads(Path(args.save_json).read_text(encoding="utf-8"))
+            previous_mode = previous.get("summary", {}).get("polar_kv_cache_mode", "layer")
+            if previous_mode != args.polar_kv_cache_mode:
+                raise ValueError("Resume KV cache mode differs from existing results.")
             previous_results = previous.get("results", []) if isinstance(previous, dict) else []
             if isinstance(previous_results, list):
                 results = [x for x in previous_results if isinstance(x, dict)]
                 completed_ids = {str(x.get("task_id")) for x in results}
                 print(f"[resume] loaded {len(results)} completed tasks")
-        except Exception as exc:
+        except (OSError, json.JSONDecodeError) as exc:
             print(f"[resume] ignoring unreadable partial output: {exc}", file=sys.stderr)
 
     def make_summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -328,6 +333,7 @@ def main() -> None:
             "top_k_ops": args.top_k_ops,
             "top_k_paths": args.top_k_paths,
             "max_new_tokens": args.max_new_tokens,
+            "polar_kv_cache_mode": args.polar_kv_cache_mode,
             "model_path": args.model_path,
             "checkpoint_path": args.checkpoint_path,
             "start_idx": args.start_idx,

@@ -85,6 +85,7 @@ def merge_results(output_dir, manifest):
         "polar_top1_accuracy_on_completed": top1 / n if n else None,
         "polar_topk_accuracy_on_completed": topk / n if n else None,
         "top_k_paths": manifest["configuration"]["top_k_paths"],
+        "configuration": manifest["configuration"],
         "metric_note": "POLAR top-k = any candidate path passes; not unbiased stochastic pass@k.",
     }
     from candidate_selection import selection_summary, sampling_summary
@@ -117,6 +118,7 @@ def build_parser():
     p.add_argument("--max_total_workers", type=int, default=0)
     p.add_argument("--limit", type=int, default=0, help="Maximum tasks; <=0 means all.")
     p.add_argument("--max_new_tokens", type=int, default=1024)
+    p.add_argument("--polar_kv_cache_mode", choices=("layer", "execution"), default="layer")
     p.add_argument("--beam_size", type=int, default=5)
     p.add_argument("--top_k_ops", type=int, default=2)
     p.add_argument("--top_k_paths", type=int, default=5)
@@ -193,7 +195,7 @@ def main():
     write_json(input_snapshot, tasks)
     evaluator = Path(__file__).resolve().with_name("eval_polar_humaneval.py")
     root = evaluator.parent.parent
-    forwarded = ("model_path", "checkpoint_path", "max_new_tokens", "beam_size",
+    forwarded = ("model_path", "checkpoint_path", "max_new_tokens", "polar_kv_cache_mode", "beam_size",
                  "top_k_ops", "top_k_paths", "seg_threshold", "max_pack",
                  "test_timeout", "embedding_model_name", "polar_d_model",
                  "polar_heads", "polar_layers", "seed", "selection_strategy",

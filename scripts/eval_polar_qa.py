@@ -28,6 +28,7 @@ def build_parser(*, multiworker=False):
         p.add_argument("--start_idx", type=int, default=0)
         p.add_argument("--num_samples", type=int, default=0)
     p.add_argument("--max_new_tokens", type=int, default=1024)
+    p.add_argument("--polar_kv_cache_mode", choices=("layer", "execution"), default="layer")
     p.add_argument("--beam_size", type=int, default=5)
     p.add_argument("--top_k_ops", type=int, default=2)
     p.add_argument("--top_k_paths", type=int, default=5)
@@ -130,7 +131,7 @@ def main():
 
     def generate(path, rendered, task, *, sample=False):
         started = clock()
-        setup_custom_path(model, path)
+        setup_custom_path(model, path, cache_mode=args.polar_kv_cache_mode)
         inputs = tokenizer([rendered], return_tensors="pt").to(model.device)
         sampling = {"temperature": args.temperature, "top_p": args.top_p} if sample else {}
         with torch.no_grad():

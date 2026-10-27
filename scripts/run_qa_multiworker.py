@@ -109,7 +109,7 @@ def main():
     evaluator = Path(__file__).with_name("eval_polar_qa.py").resolve()
     root = evaluator.parent.parent
     forwarded = ("model_path", "checkpoint_path", "mode", "predictor_input",
-                 "max_new_tokens", "beam_size", "top_k_ops", "top_k_paths",
+                 "max_new_tokens", "polar_kv_cache_mode", "beam_size", "top_k_ops", "top_k_paths",
                  "seg_threshold", "max_pack", "embedding_model_name",
                  "polar_d_model", "polar_heads", "polar_layers", "seed",
                  "selection_strategy", "base_sampling_k", "temperature", "top_p")

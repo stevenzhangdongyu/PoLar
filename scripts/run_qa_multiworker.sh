@@ -14,6 +14,7 @@ ARGS=(
   --mode "${QA_MODE:-short_answer}"
   --predictor_input "${PREDICTOR_INPUT:-question}"
   --max_new_tokens "${MAX_NEW_TOKENS:-1024}"
+  --polar_kv_cache_mode "${POLAR_KV_CACHE_MODE:-layer}"
   --beam_size "${BEAM_SIZE:-5}"
   --top_k_ops "${TOP_K_OPS:-2}"
   --top_k_paths "${TOP_K_PATHS:-5}"
