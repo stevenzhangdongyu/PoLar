@@ -43,10 +43,26 @@ def build_arg_parser() -> argparse.ArgumentParser:
     training.add_argument("--learning_rate", type=float, default=1e-4)
     training.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     training.add_argument("--no_validation", action="store_true", help="Disable validation split and save final epoch checkpoint")
+    training.add_argument(
+        "--train_only", action="store_true",
+        help="Train and save the checkpoint without running the built-in math evaluation afterward.",
+    )
+    training.add_argument(
+        "--resume_training", action="store_true",
+        help="Resume optimizer/model state and the next batch from the latest training checkpoint.",
+    )
     training.add_argument("--policy_mode", type=str, default="polar", choices=["polar", "polar_lenpref"])
     training.add_argument("--max_paths_per_sample", type=int, default=50, help="Max valid paths sampled per sample for training")
     training.add_argument("--max_total_examples", type=int, default=None, help="Cap total training examples")
     training.add_argument("--max_val_examples", type=int, default=20000, help="Cap total validation examples")
+    training.add_argument(
+        "--train_data_jsons", nargs="+", default=None,
+        help="Explicit MCTS train files, ordered by difficulty 1-5 (one per selected difficulty).",
+    )
+    training.add_argument(
+        "--val_data_jsons", nargs="+", default=None,
+        help="Explicit MCTS validation files, ordered like --train_data_jsons.",
+    )
     training.add_argument("--polar_d_model", type=int, default=256, help="Polar model hidden size")
     training.add_argument("--polar_heads", type=int, default=4, help="Polar model attention heads")
     training.add_argument("--polar_layers", type=int, default=2, help="Polar layer-encoder blocks")
@@ -154,7 +170,7 @@ def main() -> None:
                 f"Expected: {expected_ckpt}"
             )
 
-    if not args.eval:
+    if not args.eval and not args.train_only:
         existing_ckpt = checkpoint_path_for_args(args)
         if os.path.exists(existing_ckpt) and os.path.isfile(existing_ckpt):
             print(f"[Polar] Found existing final checkpoint, skip training: {existing_ckpt}")
@@ -167,9 +183,12 @@ def main() -> None:
     else:
         ckpt = train_polar(args)
         args.checkpoint_path = ckpt
-        print("\n[Polar] Training complete. Starting evaluation...")
-        evaluate_polar(args)
-        maybe_delete_checkpoint(ckpt, bool(args.delete_checkpoint_after_eval))
+        if args.train_only:
+            print(f"\n[Polar] Training complete. Checkpoint: {ckpt}")
+        else:
+            print("\n[Polar] Training complete. Starting evaluation...")
+            evaluate_polar(args)
+            maybe_delete_checkpoint(ckpt, bool(args.delete_checkpoint_after_eval))
 
 
 if __name__ == "__main__":

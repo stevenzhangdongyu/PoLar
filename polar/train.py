@@ -1,9 +1,14 @@
 from typing import List
+import hashlib
+import os
+import random
 
 import torch
+import numpy as np
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import ConcatDataset, DataLoader
+from pathlib import Path
 
 try:
     import wandb
@@ -25,6 +30,32 @@ from .data import PolarDataset, collate_fn_polar
 from .model import PolarPredictor
 
 
+def _resume_training_config(args, train_files, val_files):
+    def fingerprint(path):
+        digest = hashlib.sha256()
+        with open(path, "rb") as source:
+            for block in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(block)
+        return {"path": str(Path(path).resolve()), "sha256": digest.hexdigest()}
+
+    option_names = (
+        "model_path", "original_depth", "num_epochs", "batch_size", "learning_rate", "seed", "max_paths_per_sample",
+        "max_total_examples", "max_val_examples", "policy_mode", "lenpref_beta",
+        "drop_original_path_if_shorter_valid", "keep_original_prob",
+        "reweight_original_path_if_shorter_valid", "original_path_weight",
+        "anti_original_lambda", "per_sample_weight_normalize", "polar_d_model",
+        "polar_heads", "polar_layers", "embedding_model_name", "lr_scheduler",
+        "warmup_steps", "use_amp", "optimizer_eps", "weight_decay", "no_validation",
+        "grad_clip_norm", "nan_guard", "nan_lr_backoff", "min_lr", "target_diff",
+        "eval_all_diffs",
+    )
+    return {
+        "options": {name: getattr(args, name, None) for name in option_names},
+        "train_files": [fingerprint(path) for path in train_files],
+        "val_files": [fingerprint(path) for path in val_files],
+    }
+
+
 def train_polar(args):
     """
     Train Polar segmentation and operation predictors from valid paths.
@@ -43,24 +74,32 @@ def train_polar(args):
         diffs = list(range(1, 6))
         train_mode_suffix = "_all_diffs"
 
-    merged_files = [
-        merged_samples_path(base_path, d)
-        for d in diffs
-    ]
-    print(f"[Polar] Training from {len(merged_files)} file(s):")
-    for mf in merged_files:
+    explicit_train = getattr(args, "train_data_jsons", None)
+    explicit_val = getattr(args, "val_data_jsons", None)
+    if bool(explicit_train) != bool(explicit_val):
+        raise ValueError("Pass both --train_data_jsons and --val_data_jsons, or neither.")
+    if explicit_train:
+        if len(explicit_train) != len(diffs) or len(explicit_val) != len(diffs):
+            raise ValueError(
+                f"Expected one train and validation file per selected difficulty ({len(diffs)} each)."
+            )
+        train_files, val_files = list(explicit_train), list(explicit_val)
+    else:
+        train_files = [merged_samples_path(base_path, d) for d in diffs]
+        val_files = train_files
+    print(f"[Polar] Training from {len(train_files)} file(s):")
+    for mf in train_files:
         print(f"  - {mf}")
 
     # Build datasets (concat across diffs if needed)
     train_datasets = []
-    for mf in merged_files:
-        train_indices = None
+    for mf in train_files:
         train_datasets.append(
             PolarDataset(
                 merged_samples_json=mf,
                 start_idx=0,
-                end_idx=1500 if args.no_validation else 1250,
-                indices=train_indices,
+                end_idx=2**63 - 1 if explicit_train else (1500 if args.no_validation else 1250),
+                indices=None,
                 original_depth=args.original_depth,
                 drop_original_path_if_shorter_valid=bool(getattr(args, "drop_original_path_if_shorter_valid", False)),
                 keep_original_prob=float(getattr(args, "keep_original_prob", 0.0)),
@@ -79,14 +118,13 @@ def train_polar(args):
     val_loader = None
     if not args.no_validation:
         val_datasets = []
-        for mf in merged_files:
-            val_indices = None
+        for mf in val_files:
             val_datasets.append(
                 PolarDataset(
                     merged_samples_json=mf,
-                    start_idx=1250,
-                    end_idx=1500,
-                    indices=val_indices,
+                    start_idx=0 if explicit_train else 1250,
+                    end_idx=2**63 - 1 if explicit_train else 1500,
+                    indices=None,
                     original_depth=args.original_depth,
                     drop_original_path_if_shorter_valid=bool(getattr(args, "drop_original_path_if_shorter_valid", False)),
                     keep_original_prob=float(getattr(args, "keep_original_prob", 0.0)),
@@ -112,6 +150,7 @@ def train_polar(args):
     opt_eps = float(getattr(args, "optimizer_eps", 1e-8) or 1e-8)
     opt_wd = float(getattr(args, "weight_decay", 0.0) or 0.0)
     optimizer = optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=args.learning_rate, eps=opt_eps, weight_decay=opt_wd)
+    scaler = torch.cuda.amp.GradScaler(enabled=bool(getattr(args, "use_amp", False)))
     # Optional LR scheduler (warmup + decay). TRAIN-ONLY.
     lr_scheduler = None
     lr_sched_name = str(getattr(args, "lr_scheduler", "none") or "none").lower()
@@ -128,8 +167,43 @@ def train_polar(args):
         wandb_run_name = args.wandb_run_name or f"{method_tag}_diff{args.target_diff}_ep{args.num_epochs}_bs{args.batch_size}_lr{args.learning_rate}_seed{args.seed}"
         wandb.init(project=args.wandb_project, name=wandb_run_name, entity=args.wandb_entity, config=vars(args))
 
+    ckpt_path = checkpoint_path_for_args(args, train_mode_suffix=train_mode_suffix)
+    resume_path = str(getattr(args, "resume_checkpoint", "") or (ckpt_path + ".resume.pt"))
     best_val = float("inf")
     best_state = None
+    start_epoch = 0
+    start_batch = 0
+    saved_scheduler_state = None
+    saved_optimizer_lrs = None
+    train_config = _resume_training_config(args, train_files, val_files)
+    if bool(getattr(args, "resume_training", False)) and Path(resume_path).is_file():
+        try:
+            state = torch.load(resume_path, map_location="cpu", weights_only=False)
+        except TypeError:  # PyTorch versions before weights_only was added.
+            state = torch.load(resume_path, map_location="cpu")
+        if state.get("train_config") != train_config:
+            raise ValueError("Training resume configuration changed; use the original settings/files.")
+        model.load_state_dict(state["model_state"])
+        optimizer.load_state_dict(state["optimizer_state"])
+        saved_optimizer_lrs = [group["lr"] for group in optimizer.param_groups]
+        saved_scheduler_state = state.get("scheduler_state")
+        if state.get("scaler_state") is not None:
+            scaler.load_state_dict(state["scaler_state"])
+        best_val = float(state.get("best_val", best_val))
+        best_state = state.get("best_state")
+        start_epoch = int(state.get("epoch", 0))
+        start_batch = int(state.get("next_batch", 0))
+        if state.get("python_rng_state") is not None:
+            random.setstate(state["python_rng_state"])
+        if state.get("numpy_rng_state") is not None:
+            numpy_state = state["numpy_rng_state"]
+            np.random.set_state((numpy_state[0], np.asarray(numpy_state[1], dtype=np.uint32),
+                                 numpy_state[2], numpy_state[3], numpy_state[4]))
+        if state.get("torch_rng_state") is not None:
+            torch.set_rng_state(state["torch_rng_state"])
+        if state.get("cuda_rng_state_all") is not None:
+            torch.cuda.set_rng_state_all(state["cuda_rng_state_all"])
+        print(f"[resume] checkpoint={resume_path} epoch={start_epoch} next_batch={start_batch}")
 
     total_steps = int(max(1, args.num_epochs * max(1, len(train_loader))))
     warmup_steps = min(warmup_steps, max(0, total_steps - 1))
@@ -152,11 +226,25 @@ def train_polar(args):
             return 1.0
 
         lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=_lr_lambda)
+    if lr_scheduler is not None and saved_scheduler_state is not None:
+        lr_scheduler.load_state_dict(saved_scheduler_state)
+        for group, lr in zip(optimizer.param_groups, saved_optimizer_lrs or []):
+            group["lr"] = lr
 
-    for epoch in range(args.num_epochs):
+    for epoch in range(start_epoch, args.num_epochs):
         model.train()
         total = 0.0
-        for step, (qs, seg_t, op_t, path_lens, ex_w, anti_orig) in enumerate(train_loader):
+        epoch_generator = torch.Generator()
+        epoch_generator.manual_seed(int(args.seed) + epoch)
+        epoch_indices = torch.randperm(len(train_ds), generator=epoch_generator).tolist()
+        epoch_loader = DataLoader(
+            train_ds, batch_size=args.batch_size, sampler=epoch_indices,
+            collate_fn=collate_fn_polar,
+        )
+        epoch_batch_start = start_batch if epoch == start_epoch else 0
+        for step, (qs, seg_t, op_t, path_lens, ex_w, anti_orig) in enumerate(epoch_loader):
+            if step < epoch_batch_start:
+                continue
             seg_t = seg_t.cuda()  # seg_flip targets
             op_t = op_t.cuda()
             path_lens = path_lens.cuda()
@@ -169,9 +257,6 @@ def train_polar(args):
             grad_clip = float(getattr(args, "grad_clip_norm", 0.0) or 0.0)
             nan_backoff = float(getattr(args, "nan_lr_backoff", 0.0) or 0.0)
             min_lr = float(getattr(args, "min_lr", 0.0) or 0.0)
-
-            if not hasattr(train_polar, "_scaler"):
-                train_polar._scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
             with torch.cuda.amp.autocast(enabled=use_amp):
                 seg_logits, op_logits = model(qs)
@@ -225,7 +310,6 @@ def train_polar(args):
                 optimizer.zero_grad(set_to_none=True)
                 continue
 
-            scaler = train_polar._scaler
             if use_amp:
                 scaler.scale(loss).backward()
                 if grad_clip > 0:
@@ -246,6 +330,30 @@ def train_polar(args):
                 print(f"[{method_tag}] Epoch {epoch} Step {step} Loss {loss.item():.4f}")
                 if args.use_wandb and WANDB_AVAILABLE and wandb is not None:
                     wandb.log({"train/loss": loss.item()})
+
+            if bool(getattr(args, "resume_training", False)):
+                resume_state = {
+                    "train_config": train_config,
+                    "model_state": model.state_dict(),
+                    "optimizer_state": optimizer.state_dict(),
+                    "scheduler_state": lr_scheduler.state_dict() if lr_scheduler is not None else None,
+                    "scaler_state": scaler.state_dict(),
+                    "python_rng_state": random.getstate(),
+                    "numpy_rng_state": (np.random.get_state()[0],
+                                        np.random.get_state()[1].tolist(),
+                                        np.random.get_state()[2],
+                                        np.random.get_state()[3],
+                                        np.random.get_state()[4]),
+                    "torch_rng_state": torch.get_rng_state(),
+                    "cuda_rng_state_all": torch.cuda.get_rng_state_all(),
+                    "best_val": best_val,
+                    "best_state": best_state,
+                    "epoch": epoch,
+                    "next_batch": step + 1,
+                }
+                tmp_resume = resume_path + ".tmp"
+                torch.save(resume_state, tmp_resume)
+                os.replace(tmp_resume, resume_path)
 
         avg = total / max(1, len(train_loader))
         print(f"[{method_tag}] Epoch {epoch} Avg Loss {avg:.4f}")
@@ -298,13 +406,39 @@ def train_polar(args):
                 best_state = {k: v.detach().cpu() for k, v in model.state_dict().items()}
                 print(f"[{method_tag}] New best val {best_val:.4f}")
 
-    ckpt = checkpoint_path_for_args(args, train_mode_suffix=train_mode_suffix)
+        if bool(getattr(args, "resume_training", False)):
+            resume_state = {
+                "train_config": train_config,
+                "model_state": model.state_dict(),
+                "optimizer_state": optimizer.state_dict(),
+                "scheduler_state": lr_scheduler.state_dict() if lr_scheduler is not None else None,
+                "scaler_state": scaler.state_dict(),
+                "python_rng_state": random.getstate(),
+                "numpy_rng_state": (np.random.get_state()[0],
+                                    np.random.get_state()[1].tolist(),
+                                    np.random.get_state()[2],
+                                    np.random.get_state()[3],
+                                    np.random.get_state()[4]),
+                "torch_rng_state": torch.get_rng_state(),
+                "cuda_rng_state_all": torch.cuda.get_rng_state_all(),
+                "best_val": best_val,
+                "best_state": best_state,
+                "epoch": epoch + 1,
+                "next_batch": 0,
+            }
+            tmp_resume = resume_path + ".tmp"
+            torch.save(resume_state, tmp_resume)
+            os.replace(tmp_resume, resume_path)
+
+    ckpt = ckpt_path
     if best_state is not None and not args.no_validation:
         torch.save(best_state, ckpt)
     else:
         cpu_state = {k: v.detach().cpu() for k, v in model.state_dict().items()}
         torch.save(cpu_state, ckpt)
     print(f"[{method_tag}] Saved checkpoint: {ckpt}")
+    if bool(getattr(args, "resume_training", False)) and Path(resume_path).exists():
+        print(f"[{method_tag}] Retained resumable checkpoint: {resume_path}")
 
     if args.use_wandb and WANDB_AVAILABLE and wandb is not None:
         wandb.finish()

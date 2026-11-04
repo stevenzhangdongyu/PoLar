@@ -136,6 +136,33 @@ for GPU_RANK in "${!GPU_ARRAY[@]}"; do
     LOG_FILE="${OUTPUT_DIR}/shard_${GLOBAL_RANK}_gpu_${GPU}_worker_${LOCAL_WORKER}.log"
     WORKER_SEED=$((SEED + GLOBAL_RANK))
 
+    if [[ "${RESUME_RUN:-0}" == "1" ]] && python3 - "${INPUT_JSON}" "${SHARD_OUTPUT}" "${START}" "${SHARD_LIMIT}" "${QUESTION_FIELD}" <<'PY'
+import json
+import sys
+
+input_path, output_path, start, limit, field = sys.argv[1:]
+start, limit = int(start), int(limit)
+with open(input_path, encoding="utf-8") as f:
+    source = json.load(f)
+if isinstance(source, dict):
+    source = source.get("samples", list(source.values()))
+expected = {str(row.get(field, row.get("question", ""))).strip()
+            for row in source[start:start + limit] if isinstance(row, dict)}
+if not expected or not __import__("os").path.isfile(output_path):
+    raise SystemExit(1)
+with open(output_path, encoding="utf-8") as f:
+    result = json.load(f)
+samples = result.get("samples", []) if isinstance(result, dict) else result
+completed = {str(row.get("question", "")).strip() for row in samples if isinstance(row, dict)}
+raise SystemExit(0 if expected <= completed else 1)
+PY
+    then
+      echo "[resume] rank=${GLOBAL_RANK} shard complete; skipping ${SHARD_OUTPUT}"
+      START=$((START + SHARD_LIMIT))
+      GLOBAL_RANK=$((GLOBAL_RANK + 1))
+      continue
+    fi
+
     echo "[launch-json] rank=${GLOBAL_RANK} gpu=${GPU} local_worker=${LOCAL_WORKER} start_idx=${START} limit=${SHARD_LIMIT}"
     CUDA_VISIBLE_DEVICES="${GPU}" \
     TOKENIZERS_PARALLELISM=false \
@@ -163,7 +190,7 @@ for GPU_RANK in "${!GPU_ARRAY[@]}"; do
       --device cuda \
       --seed "${WORKER_SEED}" \
       --resume \
-      > "${LOG_FILE}" 2>&1 &
+      >> "${LOG_FILE}" 2>&1 &
 
     PIDS+=("$!")
     START=$((START + SHARD_LIMIT))
