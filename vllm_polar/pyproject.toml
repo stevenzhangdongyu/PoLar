@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "polar-vllm"
+version = "0.1.0"
+description = "Fixed-path PoLar adapter plugin for vLLM"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.entry-points."vllm.general_plugins"]
+polar = "polar_vllm.plugin:register"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["polar_vllm*"]
