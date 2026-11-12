@@ -14,6 +14,53 @@ from llm_depth_router.patches.cache_mode import (
 
 logger = logging.get_logger(__name__)
 
+
+def _build_causal_mask(
+    model,
+    attention_mask,
+    inputs_embeds,
+    cache_position,
+    past_key_values,
+    position_ids,
+    output_attentions,
+):
+    """Support both the pre-4.56 and current Transformers Qwen2 APIs."""
+    legacy = getattr(model, "_update_causal_mask", None)
+    if legacy is not None:
+        return legacy(
+            attention_mask,
+            inputs_embeds,
+            cache_position,
+            past_key_values,
+            output_attentions,
+        )
+
+    try:
+        from transformers.masking_utils import create_causal_mask
+    except ImportError as exc:
+        raise RuntimeError(
+            "This Transformers version has neither Qwen2Model._update_causal_mask "
+            "nor transformers.masking_utils.create_causal_mask; pin a compatible "
+            "Transformers release (the repository baseline is 4.52.x)."
+        ) from exc
+
+    # Transformers changed this helper's optional arguments across minor
+    # releases. Pass only parameters accepted by the installed version.
+    import inspect
+
+    values = {
+        "config": model.config,
+        "input_embeds": inputs_embeds,
+        "inputs_embeds": inputs_embeds,
+        "attention_mask": attention_mask,
+        "cache_position": cache_position,
+        "past_key_values": past_key_values,
+        "position_ids": position_ids,
+    }
+    accepted = inspect.signature(create_causal_mask).parameters
+    kwargs = {key: value for key, value in values.items() if key in accepted}
+    return create_causal_mask(**kwargs)
+
 def _qwen2_forward_patch(
     self,
     input_ids: torch.LongTensor = None,
@@ -60,8 +107,14 @@ def _qwen2_forward_patch(
     if position_ids is None:
         position_ids = cache_position.unsqueeze(0)
 
-    causal_mask = self._update_causal_mask(
-        attention_mask, inputs_embeds, cache_position, past_key_values, output_attentions
+    causal_mask = _build_causal_mask(
+        self,
+        attention_mask,
+        inputs_embeds,
+        cache_position,
+        past_key_values,
+        position_ids,
+        output_attentions,
     )
 
     hidden_states = inputs_embeds

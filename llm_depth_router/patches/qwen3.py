@@ -15,6 +15,47 @@ from llm_depth_router.patches.cache_mode import (
 logger = logging.get_logger(__name__)
 
 
+def _build_causal_mask(
+    model,
+    attention_mask,
+    inputs_embeds,
+    cache_position,
+    past_key_values,
+    position_ids,
+    output_attentions,
+):
+    """Support both the pre-4.56 and current Transformers Qwen3 APIs."""
+    legacy = getattr(model, "_update_causal_mask", None)
+    if legacy is not None:
+        return legacy(
+            attention_mask,
+            inputs_embeds,
+            cache_position,
+            past_key_values,
+            output_attentions,
+        )
+    try:
+        from transformers.masking_utils import create_causal_mask
+    except ImportError as exc:
+        raise RuntimeError(
+            "Transformers Qwen3 causal-mask API is unsupported; install a "
+            "compatible Transformers version."
+        ) from exc
+    import inspect
+
+    values = {
+        "config": model.config,
+        "input_embeds": inputs_embeds,
+        "inputs_embeds": inputs_embeds,
+        "attention_mask": attention_mask,
+        "cache_position": cache_position,
+        "past_key_values": past_key_values,
+        "position_ids": position_ids,
+    }
+    accepted = inspect.signature(create_causal_mask).parameters
+    return create_causal_mask(**{k: v for k, v in values.items() if k in accepted})
+
+
 def _qwen3_forward_patch(
     self,
     input_ids: Optional[torch.LongTensor] = None,
@@ -65,8 +106,14 @@ def _qwen3_forward_patch(
     if position_ids is None:
         position_ids = cache_position.unsqueeze(0)
 
-    causal_mask = self._update_causal_mask(
-        attention_mask, inputs_embeds, cache_position, past_key_values, output_attentions
+    causal_mask = _build_causal_mask(
+        self,
+        attention_mask,
+        inputs_embeds,
+        cache_position,
+        past_key_values,
+        position_ids,
+        output_attentions,
     )
 
     hidden_states = inputs_embeds

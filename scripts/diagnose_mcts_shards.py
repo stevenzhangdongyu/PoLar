@@ -45,6 +45,14 @@ def json_count(path: Path) -> tuple[int | None, str | None]:
         return None, f"unreadable JSON: {type(exc).__name__}: {exc}"
 
 
+def find_shard_output(output_dir: Path, log: Path) -> list[Path]:
+    """Find JSON outputs even when the launcher adds _start/_limit suffixes."""
+    stem = log.name.removesuffix(".resume.log").removesuffix(".log")
+    exact = output_dir / f"{stem}.json"
+    matches = sorted(output_dir.glob(f"{stem}_start_*_limit_*.json"))
+    return ([exact] if exact.is_file() else []) + [p for p in matches if p != exact]
+
+
 def log_errors(path: Path, tail_lines: int) -> list[str]:
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     hits = [line.strip() for line in lines if ERROR_RE.search(line)]
@@ -88,8 +96,15 @@ def main() -> int:
         info = shard_info(log)
         # The launcher uses the same stem for the output JSON, regardless of
         # whether the log is .log or .resume.log.
-        output = args.output_dir / (log.name.removesuffix(".resume.log").removesuffix(".log") + ".json")
-        count, json_error = json_count(output)
+        output_candidates = find_shard_output(args.output_dir, log)
+        output = output_candidates[0] if output_candidates else args.output_dir / (
+            log.name.removesuffix(".resume.log").removesuffix(".log") + ".json"
+        )
+        counts = [json_count(candidate) for candidate in output_candidates]
+        count, json_error = counts[0] if counts else (None, "missing output JSON")
+        if counts and len(counts) > 1:
+            count = max((item[0] or 0 for item in counts), default=0)
+            json_error = None if any(item[0] is not None for item in counts) else counts[0][1]
         errors = log_errors(log, args.tail_lines)
         start = int(info["start"]) if info.get("start") else None
         limit = int(info["limit"]) if info.get("limit") else None
