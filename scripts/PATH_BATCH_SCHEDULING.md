@@ -11,6 +11,19 @@ of) integer layer paths and builds schedules for three policies:
 
 ## Input format
 
+The repository includes a deterministic synthetic workload generator. It
+creates 128 Qwen2.5-3B-sized (36-layer) requests split evenly across exact
+duplicates, shared-prefix/suffix variants, loop variants, and high-diversity
+paths:
+
+```bash
+python scripts/generate_path_batch_workload.py
+```
+
+This writes `data/path_batching/synthetic_paths_128.json`. The paths are for
+scheduler stress testing only; they were not sampled from MCTS or predictor
+outputs and are not correctness-validated.
+
 Plain path list:
 
 ```json
@@ -28,9 +41,18 @@ It also accepts MCTS result records containing `final_valid_transitions`:
 
 ```bash
 python scripts/simulate_path_batching.py paths.json \
-  --path-field final_valid_transitions \
+  --path-field path \
   --depth 36 \
   --output path_schedule_results.json
+```
+
+For an immediate scheduler-plan comparison on the generated workload:
+
+```bash
+python scripts/simulate_path_batching.py \
+  data/path_batching/synthetic_paths_128.json \
+  --path-field path --depth 36 \
+  --output data/path_batching/synthetic_paths_128_schedule.json
 ```
 
 If reading MCTS data, each valid transition becomes one request path. For a
