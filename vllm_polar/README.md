@@ -41,6 +41,59 @@ The OpenAI-compatible endpoint uses the normal vLLM API, for example
 `POST /v1/chat/completions`. `POLAR_PATH_JSON` and cache mode are read at model
 initialization, so use one server instance per fixed path/configuration.
 
+## Prepare a heterogeneous request workload
+
+Create deterministic unique prompts and a token-ID manifest from the path
+workload:
+
+```bash
+PYTHONPATH="$PWD/vllm_polar:$PYTHONPATH" \
+python scripts/prepare_vllm_path_manifest.py \
+  data/path_batching/synthetic_paths_128.json \
+  /models/Qwen2.5-3B-Instruct \
+  ./outputs/path_batching_128 \
+  --max-depth 36
+```
+
+This writes `prompts.jsonl` and `path_manifest.json`. Each manifest entry is
+keyed by SHA-256 of the exact tokenizer-produced prompt token IDs and stores
+the request ID and layer path. The prompts can be sent to the OpenAI-compatible
+endpoint by a benchmark client.
+
+The vLLM core checkout contains an experimental V1 Qwen2 executor. It requires
+the architecture name `PolarQwen2ForCausalLM` (pass it with `--hf-overrides`),
+`VLLM_POLAR_PATH_MANIFEST`, `--enforce-eager`, FlashAttention, single GPU / TP=1
+/ PP=1, and text-only prompts. Each path must have between 1 and the manifest's
+maximum number of visits; visit `j` uses a dedicated physical or KV-only
+attention slot `j` for isolated KV. Additional slots are registered from the
+manifest at model initialization. Unsupported backends or attention metadata
+fail closed.
+
+After copying the vLLM changes to the server and installing that checkout in
+the `zdy_vllm_polar` environment, run `examples/polar/validate_polar_vllm.py`
+for each scheduler policy. It saves per-request results and a summary with
+request/token throughput and latency percentiles. Compare policies using the
+same prompts, concurrency, generation length, and server settings.
+
+Example server and validation commands on the A100 host:
+
+```bash
+bash examples/polar/launch_qwen2.sh \
+  /home/z00894149/Qwen2.5-3B-Instruct \
+  /home/z00894149/polar_dev/path_batching_128/path_manifest.json \
+  dynamic_layer 0 8000
+
+python examples/polar/validate_polar_vllm.py \
+  /home/z00894149/polar_dev/path_batching_128/prompts.jsonl \
+  /home/z00894149/polar_dev/path_batching_128/results \
+  --strategy dynamic_layer --concurrency 8 --max-tokens 64
+```
+
+Restart the server with `serial` and `identical_path` to compare those
+policies. Install a fresh copy of this checkout in the server environment
+after applying the patch; do not reset the server's PoLar checkout to copy the
+vLLM changes.
+
 ## KV behavior and current constraints
 
 - `execution`: each repeated visit has its own `Attention` object/KV slot. The
