@@ -234,7 +234,10 @@ def run(args):
             for key in list(env):
                 if key.startswith("VLLM_POLAR_"):
                     del env[key]
+            # The legacy polar entry point overrides native Qwen2 registration.
+            # This experiment uses only the architectures in the modified core.
             env.update(CUDA_VISIBLE_DEVICES=args.gpu, VLLM_USE_V2_MODEL_RUNNER="0",
+                       VLLM_PLUGINS="",
                        HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1",
                        PYTHONPATH=str(args.vllm_root) + os.pathsep
                        + env.get("PYTHONPATH", ""))

@@ -20,6 +20,8 @@ bash scripts/run_vllm_aligned_benchmark.sh
 
 所有服务统一 V1 runner、eager、FlashAttention、BF16、单卡、prefix cache 关闭、相同调度 token/sequence 预算。脚本要求端口空闲；只清理自己启动的服务进程组，Ctrl+C 会保留已完成结果。结果目录必须不存在，防止覆盖；不提供中断续跑，重新运行应使用新目录。
 
+服务子进程显式设置 `VLLM_PLUGINS=""`，禁用外部插件自动注册。此前安装的 `polar_vllm` 静态路径插件会覆盖原生 Qwen2，并要求 `POLAR_PATH_JSON`；它不参与本次混合路径实验。这里使用修改版 vLLM 自带的模型注册，不需要卸载旧插件。
+
 ## 输出
 
 - `config.json`：完整实验参数、源码 commit/dirty 状态、包版本、GPU 信息、输入哈希及指标定义。
