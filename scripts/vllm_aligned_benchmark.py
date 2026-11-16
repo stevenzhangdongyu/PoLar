@@ -243,11 +243,12 @@ def run(args):
         for key in ("model", "vllm_root", "gpu", "input_len", "output_len",
                     "requests", "warmups", "concurrency", "repeats", "seed",
                     "max_model_len", "max_num_batched_tokens", "max_num_seqs",
-                    "gpu_memory_utilization"):
+                    "gpu_memory_utilization", "kv_cache_mode"):
             current = getattr(args, key)
             if isinstance(current, Path):
                 current = str(current)
-            if previous.get(key) != current:
+            old = previous.get(key, "execution" if key == "kv_cache_mode" else None)
+            if old != current:
                 raise ValueError(f"Resume configuration mismatch: {key}")
         rows = [json.loads(line) for line in
                 (args.output / "prompts.jsonl").read_text().splitlines()]
@@ -363,6 +364,7 @@ def run(args):
             command = list(common)
             if mode != "base":
                 env.update(VLLM_POLAR_SCHEDULER=mode,
+                           VLLM_POLAR_KV_CACHE_MODE=args.kv_cache_mode,
                            VLLM_POLAR_PATH_MANIFEST=str(args.output / "path_manifest.json"))
                 command += ["--hf-overrides", '{"architectures":["PolarQwen2ForCausalLM"]}']
             dump(directory / "launch.json", {"argv": command,
@@ -443,6 +445,8 @@ def main():
     for name in ("vllm-root", "model", "paths", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--gpu", default="0")
+    parser.add_argument("--kv-cache-mode", choices=["execution", "layer"],
+                        default="execution")
     parser.add_argument("--resume", action="store_true",
                         help="Reuse complete rounds in the same output directory")
     parser.add_argument("--port", type=int, default=8000)

@@ -1,5 +1,28 @@
 # 单卡 Base / PoLar 对齐实测
 
+## KV Cache 模式
+
+修改版 vLLM 核心现在支持 `VLLM_POLAR_KV_CACHE_MODE=execution|layer`，默认 execution：每个路径位置独立 KV。layer：按物理层共享 KV，第二次进入覆盖当前 scheduled token 位置的 KV，不清空历史。layer 模式不申请 loop 的额外 execution slots，且同物理层的不同路径位置可合批（首次执行与后续执行仍分开，保证 residual 语义）。不依赖旧静态插件的 `POLAR_KV_CACHE_MODE`。
+
+调试命令：
+
+```bash
+bash scripts/debug_vllm_paths.sh data/path_batching/debug_paths_example.json \
+  --kv-cache-mode layer --concurrency 3 --max-tokens 8
+```
+
+全流程吞吐测试：
+
+```bash
+KV_CACHE_MODE=layer GPU_ID=0 CONCURRENCIES="8" \
+OUTPUT_DIR=/home/z00894149/polar_dev/vllm_aligned_layer_c8 \
+bash scripts/run_vllm_aligned_benchmark.sh
+```
+
+execution 对照使用 `KV_CACHE_MODE=execution` 和另一个新目录。恢复时必须保持 KV 模式相同；此前未记录模式的配置按 execution 处理。需要同步两个仓库的 Python 源码并重启服务，不涉及 CUDA 重编译。
+
+覆盖模式的历史 KV 是上次最后一次访问物理层留下的值；prefill 内先写整个 chunk 再读 attention，结果可能随 chunk 边界改变。保留现有 chunked-prefill 设置以便与已有实验对照，不宣称等价于独立缓存或先前 HF 后端。修改缓存模式同时改变模型语义、KV 内存和可合批机会，因此吞吐差值不是纯调度收益。须在服务器验证无 loop 路径两模式输出、loop 路径各调度策略输出与精度；本地仅验证了 CPU gather/scatter、slot 选择分组和覆盖模拟，未运行真实 CUDA attention。
+
 在服务器已安装修改版 vLLM 的 `zdy_vllm_polar` 环境运行。脚本不安装软件、不编译源码，也不会连接远端机器代跑。先同步 PoLar 的两个新脚本和原有 `data/path_batching/synthetic_paths_128.json`，并确保服务器 vLLM 含已有 PoLar 适配代码。
 
 ```bash

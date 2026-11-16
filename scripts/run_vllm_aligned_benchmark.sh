@@ -18,6 +18,7 @@ exec "${PYTHON:-python}" "$SCRIPT_DIR/vllm_aligned_benchmark.py" \
   --paths "${PATHS_JSON:-$SCRIPT_DIR/../data/path_batching/synthetic_paths_128.json}" \
   --output "${OUTPUT_DIR:-$SCRIPT_DIR/../outputs/vllm_aligned_$(date +%Y%m%d_%H%M%S)}" \
   --gpu "${GPU_ID:-0}" --port "${PORT:-8000}" \
+  --kv-cache-mode "${KV_CACHE_MODE:-execution}" \
   --input-len "${INPUT_LEN:-512}" --output-len "${OUTPUT_LEN:-256}" \
   --requests "${NUM_REQUESTS:-512}" --warmups "${NUM_WARMUPS:-20}" \
   --concurrency "${CONCURRENCIES:-1 2 4 8 16 32 64 96}" \

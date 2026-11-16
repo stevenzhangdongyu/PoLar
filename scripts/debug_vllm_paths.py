@@ -72,6 +72,8 @@ def main():
     parser.add_argument("--vllm-root", type=Path,
                         default=Path("/home/z00894149/polar_dev/vllm"))
     parser.add_argument("--gpu", default="0")
+    parser.add_argument("--kv-cache-mode", choices=["layer", "execution"],
+                        default="execution")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--strategy", choices=["serial", "identical_path", "dynamic_layer"],
                         default="dynamic_layer")
@@ -114,6 +116,7 @@ def main():
     env.update(CUDA_VISIBLE_DEVICES=args.gpu, VLLM_USE_V2_MODEL_RUNNER="0",
                VLLM_PLUGINS="", PYTHONUNBUFFERED="1",
                VLLM_POLAR_SCHEDULER=args.strategy,
+               VLLM_POLAR_KV_CACHE_MODE=args.kv_cache_mode,
                VLLM_POLAR_PATH_MANIFEST=str(output / "path_manifest.json"),
                HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1",
                PYTHONPATH=str(args.vllm_root) + os.pathsep + env.get("PYTHONPATH", ""))
