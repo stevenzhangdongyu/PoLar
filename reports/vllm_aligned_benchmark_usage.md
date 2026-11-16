@@ -18,7 +18,23 @@ bash scripts/run_vllm_aligned_benchmark.sh
 
 可配置环境变量：`VLLM_ROOT`、`MODEL_PATH`、`PATHS_JSON`、`OUTPUT_DIR`、`GPU_ID`、`PORT`、`INPUT_LEN`、`OUTPUT_LEN`、`NUM_REQUESTS`、`NUM_WARMUPS`、`CONCURRENCIES`、`REPEATS`、`SEED`、`GPU_MEMORY_UTILIZATION`、`MAX_MODEL_LEN`、`MAX_NUM_BATCHED_TOKENS`、`MAX_NUM_SEQS`、`PYTHON`。默认 vLLM 和模型路径分别是 `/home/z00894149/polar_dev/vllm` 和 `/home/z00894149/Qwen2.5-3B-Instruct`。修改这些设置会改变对照条件。
 
-所有服务统一 V1 runner、eager、FlashAttention、BF16、单卡、prefix cache 关闭、相同调度 token/sequence 预算。脚本要求端口空闲；只清理自己启动的服务进程组，Ctrl+C 会保留已完成结果。结果目录必须不存在，防止覆盖；不提供中断续跑，重新运行应使用新目录。
+所有服务统一 V1 runner、eager、FlashAttention、BF16、单卡、prefix cache 关闭、相同调度 token/sequence 预算。脚本要求端口空闲；只清理自己启动的服务进程组，Ctrl+C 会保留已完成结果。新实验目录必须不存在；恢复时显式使用 `RESUME=1`。
+
+## 断点恢复
+
+同步更新后的两个脚本，指定原来的目录和相同参数：
+
+```bash
+conda activate zdy_vllm_polar
+cd /home/z00894149/polar_dev/PoLar
+RESUME=1 GPU_ID=0 CONCURRENCIES="8" \
+OUTPUT_DIR=/home/z00894149/polar_dev/vllm_aligned_c8 \
+bash scripts/run_vllm_aligned_benchmark.sh
+```
+
+恢复单位是 `repeat × 策略 × 并发` 的完整轮次。完整的 summary、逐请求记录、token 数和服务日志均通过检查才跳过；兼容本脚本此前版本生成的完整轮次。中断或失败的轮次归档为 `.interrupted_*`，重新预热后整轮测试，不拼接旧吞吐。已有结果会重新纳入 comparison/report。已完成整个策略时不启动该策略服务。
+
+恢复校验模型路径、GPU 编号、长度/请求数/并发/重复/seed/预算、数据哈希、vLLM commit/dirty 状态和 Python 包列表；不匹配时拒绝合并。请保持模型权重不变（脚本未计算大体积权重哈希）。原配置保留，恢复环境写入 `resume_*.json`。同目录加文件锁，防止两个脚本同时修改结果。SIGKILL/机器掉电不能保证服务自动清理；重新执行前确认原服务已停止、端口已释放。恢复不支持自动接管遗留服务。
 
 服务子进程显式设置 `VLLM_PLUGINS=""`，禁用外部插件自动注册。此前安装的 `polar_vllm` 静态路径插件会覆盖原生 Qwen2，并要求 `POLAR_PATH_JSON`；它不参与本次混合路径实验。这里使用修改版 vLLM 自带的模型注册，不需要卸载旧插件。
 

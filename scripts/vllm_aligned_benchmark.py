@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import math
@@ -21,7 +22,62 @@ import urllib.request
 
 
 def dump(path, value):
-    Path(path).write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n")
+    path = Path(path)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n")
+    temporary.replace(path)
+
+
+def validate_server_log(filename, mode):
+    content = filename.read_text()
+    if "Using V2 Model Runner" in content:
+        raise ValueError("V2 runner selected unexpectedly")
+    if "Traceback (most recent call last)" in content:
+        raise ValueError(f"Server traceback: {filename}")
+    if mode != "base" and "PoLar heterogeneous path execution is experimental" not in content:
+        raise ValueError(f"PoLar hook not observed: {filename}")
+    if "polar_vllm/qwen2.py" in content:
+        raise ValueError("Legacy static-path plugin detected")
+
+
+def completed_group(directory, rows, args, concurrency, mode):
+    """Accept only a full successful round, including pre-resume-script results."""
+    try:
+        summary = json.loads((directory / "summary.json").read_text())
+        results = [json.loads(line) for line in
+                   (directory / "results.jsonl").read_text().splitlines()]
+        expected = {row["request_id"] for row in rows}
+        if (summary["expected_requests"] != len(rows)
+                or summary["completed_requests"] != len(rows)
+                or summary["failed_requests"] != 0
+                or summary["concurrency"] != concurrency
+                or len(results) != len(rows)
+                or {r["request_id"] for r in results} != expected
+                or summary["prompt_tokens"] != len(rows) * args.input_len
+                or summary["completion_tokens"] != len(rows) * args.output_len):
+            return None
+        for row in results:
+            if (row.get("error") is not None
+                    or row["prompt_tokens"] != args.input_len
+                    or row["completion_tokens"] != args.output_len):
+                return None
+            for key in ("latency_seconds", "ttft_seconds"):
+                if not math.isfinite(row[key]) or row[key] < 0:
+                    return None
+        receipt = directory / "complete.json"
+        log = (directory.parent / json.loads(receipt.read_text())["server_log"]
+               if receipt.exists() else directory.parent / "server.log")
+        validate_server_log(log, mode)
+        return summary, {r["request_id"]: r["text"] for r in results}
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def archive_partial(path):
+    if path.exists():
+        target = path.with_name(path.name + f".interrupted_{time.time_ns()}")
+        path.rename(target)
+        print(f"[archive] {target}", flush=True)
 
 
 def digest(ids):
@@ -177,13 +233,34 @@ def stop_server(process):
 def run(args):
     from transformers import AutoConfig, AutoTokenizer
 
-    args.output.mkdir(parents=True, exist_ok=False)
     args.url = f"http://127.0.0.1:{args.port}"
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", args.port))
     config = AutoConfig.from_pretrained(str(args.model), local_files_only=True)
-    tokenizer = AutoTokenizer.from_pretrained(str(args.model), local_files_only=True)
-    rows = prepare(args, tokenizer, config.num_hidden_layers)
+    saved_config = args.output / "config.json"
+    if args.resume:
+        previous = json.loads(saved_config.read_text())
+        for key in ("model", "vllm_root", "gpu", "input_len", "output_len",
+                    "requests", "warmups", "concurrency", "repeats", "seed",
+                    "max_model_len", "max_num_batched_tokens", "max_num_seqs",
+                    "gpu_memory_utilization"):
+            current = getattr(args, key)
+            if isinstance(current, Path):
+                current = str(current)
+            if previous.get(key) != current:
+                raise ValueError(f"Resume configuration mismatch: {key}")
+        rows = [json.loads(line) for line in
+                (args.output / "prompts.jsonl").read_text().splitlines()]
+        if len(rows) != args.requests:
+            raise ValueError("Saved request count mismatch")
+        manifest = json.loads((args.output / "path_manifest.json").read_text())
+        for row in rows:
+            if (len(row["token_ids"]) != args.input_len
+                    or manifest["entries"][digest(row["token_ids"])]["path"] != row["path"]):
+                raise ValueError("Saved prompt/manifest mismatch")
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(str(args.model), local_files_only=True)
+        rows = prepare(args, tokenizer, config.num_hidden_layers)
     metadata = {key: str(value) if isinstance(value, Path) else value
                 for key, value in vars(args).items()}
     metadata.update(
@@ -209,7 +286,14 @@ def run(args):
         gpu_info=capture(["nvidia-smi"]),
         physical_depth=config.num_hidden_layers,
         max_path_executions=max(len(r["path"]) for r in rows))
-    dump(args.output / "config.json", metadata)
+    if args.resume:
+        for key in ("input_sha256", "source_paths_sha256", "physical_depth",
+                    "max_path_executions", "python", "vllm_git", "vllm_dirty", "packages"):
+            if previous.get(key) != metadata[key]:
+                raise ValueError(f"Resume environment/data mismatch: {key}; use a new output directory")
+        dump(args.output / f"resume_{time.time_ns()}.json", metadata)
+    else:
+        dump(saved_config, metadata)
     print(json.dumps(metadata, indent=2), flush=True)
     common = [sys.executable, "-m", "vllm.entrypoints.openai.api_server",
               "--model", str(args.model), "--served-model-name", "polar-qwen",
@@ -223,13 +307,48 @@ def run(args):
               "--gpu-memory-utilization", str(args.gpu_memory_utilization),
               "--seed", str(args.seed), "--dtype", "bfloat16"]
     summaries, references, checks = [], {}, []
+    def record(summary, outputs, mode, repeat, concurrency):
+        summary.update(mode=mode, repeat=repeat)
+        summaries.append(summary)
+        family = "base" if mode == "base" else "mixed"
+        if family not in references:
+            references[family] = outputs
+        different = [key for key in outputs if outputs[key] != references[family][key]]
+        checks.append({"mode": mode, "concurrency": concurrency,
+                       "repeat": repeat, "family": family,
+                       "different_text_count": len(different),
+                       "different_request_ids": different})
+        dump(args.output / "comparison.json", {
+            "runs": summaries, "output_consistency": checks})
+        write_report(args.output, summaries, checks)
+
     for repeat in range(args.repeats):
         # Rotate policy order across repeats to reduce systematic ordering effects.
         modes = ["base", "serial", "identical_path", "dynamic_layer"]
         modes = modes[repeat % 4:] + modes[:repeat % 4]
         for mode in modes:
             directory = args.output / f"repeat_{repeat}" / mode
-            directory.mkdir(parents=True)
+            directory.mkdir(parents=True, exist_ok=True)
+            pending = []
+            for concurrency in args.concurrency:
+                completed = completed_group(directory / f"c{concurrency}", rows,
+                                            args, concurrency, mode) if args.resume else None
+                if completed is not None:
+                    print(f"[resume] skip repeat={repeat} mode={mode} C={concurrency}", flush=True)
+                    record(*completed, mode, repeat, concurrency)
+                else:
+                    pending.append(concurrency)
+            if not pending:
+                continue
+            # Preserve logs backing already completed rounds and legacy results.
+            archive_partial(directory / "server.log")
+            archive_partial(directory / "launch.json")
+            # Legacy complete rounds refer to server.log: update their receipt.
+            for concurrency in args.concurrency:
+                group = directory / f"c{concurrency}"
+                if concurrency not in pending and not (group / "complete.json").exists():
+                    archived = sorted(directory.glob("server.log.interrupted_*"))[-1]
+                    dump(group / "complete.json", {"server_log": archived.name})
             env = os.environ.copy()
             for key in list(env):
                 if key.startswith("VLLM_POLAR_"):
@@ -265,28 +384,23 @@ def run(args):
                             if time.monotonic() > deadline:
                                 raise RuntimeError(f"Readiness timeout: {directory}")
                             time.sleep(1)
-                    for concurrency in args.concurrency:
+                    for concurrency in pending:
+                        archive_partial(directory / f"c{concurrency}")
+                        archive_partial(directory / f"c{concurrency}_warmup")
                         print(f"[run] {mode} C={concurrency} warmup={args.warmups}", flush=True)
                         if args.warmups:
                             warm_rows = [rows[i % len(rows)] for i in range(args.warmups)]
                             replay(args, warm_rows, concurrency, directory / f"c{concurrency}_warmup")
                         summary, outputs = replay(args, rows, concurrency,
                                                   directory / f"c{concurrency}")
-                        summary.update(mode=mode, repeat=repeat)
-                        summaries.append(summary)
+                        validate_server_log(directory / "server.log", mode)
+                        # Keep a group-specific log so later restarts cannot invalidate it.
+                        group_log = f"server_c{concurrency}_{time.time_ns()}.log"
+                        (directory / group_log).write_bytes((directory / "server.log").read_bytes())
+                        dump(directory / f"c{concurrency}" / "complete.json",
+                             {"server_log": group_log})
+                        record(summary, outputs, mode, repeat, concurrency)
                         print(json.dumps(summary), flush=True)
-                        # First completed policy is the per-family reference.
-                        family = "base" if mode == "base" else "mixed"
-                        if family not in references:
-                            references[family] = outputs
-                        different = [key for key in outputs
-                                     if outputs[key] != references[family][key]]
-                        checks.append({"mode": mode, "concurrency": concurrency,
-                                       "repeat": repeat, "family": family,
-                                       "different_text_count": len(different),
-                                       "different_request_ids": different})
-                        dump(args.output / "comparison.json", {
-                            "runs": summaries, "output_consistency": checks})
                     server_text = (directory / "server.log").read_text()
                     if "Using V2 Model Runner" in server_text:
                         raise RuntimeError("V2 runner selected unexpectedly")
@@ -329,6 +443,8 @@ def main():
     for name in ("vllm-root", "model", "paths", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--gpu", default="0")
+    parser.add_argument("--resume", action="store_true",
+                        help="Reuse complete rounds in the same output directory")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--input-len", type=int, default=512)
     parser.add_argument("--output-len", type=int, default=256)
@@ -362,7 +478,17 @@ def main():
 
     signal.signal(signal.SIGTERM, interrupted)
     try:
-        run(args)
+        if args.resume:
+            if not (args.output / "config.json").is_file():
+                parser.error("--resume requires an existing output/config.json")
+        else:
+            args.output.mkdir(parents=True, exist_ok=False)
+        with (args.output / ".run.lock").open("a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                parser.error("Another benchmark is using this output directory")
+            run(args)
     except KeyboardInterrupt:
         print("[stopped] Owned server stopped; completed results preserved.", file=sys.stderr)
         return 130

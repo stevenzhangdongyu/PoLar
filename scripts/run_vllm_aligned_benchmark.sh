@@ -2,6 +2,14 @@
 # Run inside the server's zdy_vllm_polar environment. No install or build is done.
 set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+resume_args=()
+if [[ "${RESUME:-0}" == "1" ]]; then
+  if [[ -z "${OUTPUT_DIR:-}" ]]; then
+    echo "RESUME=1 requires OUTPUT_DIR pointing to the existing run" >&2
+    exit 2
+  fi
+  resume_args+=(--resume)
+fi
 
 # All settings can be overridden with environment variables.
 exec "${PYTHON:-python}" "$SCRIPT_DIR/vllm_aligned_benchmark.py" \
@@ -17,4 +25,4 @@ exec "${PYTHON:-python}" "$SCRIPT_DIR/vllm_aligned_benchmark.py" \
   --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION:-0.9}" \
   --max-model-len "${MAX_MODEL_LEN:-32768}" \
   --max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS:-2048}" \
-  --max-num-seqs "${MAX_NUM_SEQS:-256}" "$@"
+  --max-num-seqs "${MAX_NUM_SEQS:-256}" "${resume_args[@]}" "$@"
