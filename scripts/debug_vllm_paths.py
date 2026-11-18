@@ -78,6 +78,8 @@ def main():
     parser.add_argument("--vllm-root", type=Path,
                         default=Path("/home/z00894149/polar_dev/vllm"))
     parser.add_argument("--gpu", default="0")
+    parser.add_argument("--base", action="store_true",
+                        help="Profile native Qwen2 with the same prompts; ignore layer paths")
     parser.add_argument("--kv-cache-mode", choices=["layer", "execution"],
                         default="execution")
     parser.add_argument("--port", type=int, default=8000)
@@ -134,8 +136,14 @@ def main():
                VLLM_POLAR_PATH_MANIFEST=str(output / "path_manifest.json"),
                HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1",
                PYTHONPATH=str(args.vllm_root) + os.pathsep + env.get("PYTHONPATH", ""))
+    if args.base:
+        for key in list(env):
+            if key.startswith("VLLM_POLAR_"):
+                del env[key]
+        print("[base] Native Qwen2; paths retained as workload metadata only", flush=True)
     if args.profile:
-        env["VLLM_POLAR_PROFILE"] = "1"
+        if not args.base:
+            env["VLLM_POLAR_PROFILE"] = "1"
         env["POLAR_DEBUG"] = "0"
         env["POLAR_DEBUG_BATCH"] = "0"
     command = [sys.executable, "-u", "-m", "vllm.entrypoints.openai.api_server",
@@ -146,7 +154,8 @@ def main():
                "--attention-backend", "FLASH_ATTN", "--dtype", "bfloat16",
                "--max-model-len", str(args.max_model_len),
                "--max-num-seqs", str(max(8, args.concurrency)),
-               "--hf-overrides", '{"architectures":["PolarQwen2ForCausalLM"]}']
+               "--hf-overrides", json.dumps({"architectures": [
+                   "Qwen2ForCausalLM" if args.base else "PolarQwen2ForCausalLM"]})]
     if args.profile:
         command += ["--profiler-config", json.dumps({
             "profiler": "torch", "torch_profiler_dir": str(output / "traces"),
