@@ -212,6 +212,7 @@ def main():
                 profiling = True
             print(f"[profile] iterations={args.profile_iterations}; 0 means full replay", flush=True)
         print(f"[send] requests={len(rows)} concurrency={args.concurrency}", flush=True)
+        benchmark_start = time.perf_counter()
         with (output / "results.jsonl").open("w") as stream:
             with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
                 futures = [pool.submit(request_one, url, row, args.max_tokens) for row in rows]
@@ -221,6 +222,27 @@ def main():
                     stream.write(json.dumps(result, ensure_ascii=False) + "\n")
                     stream.flush()
                     print("[result] " + json.dumps(result, ensure_ascii=False), flush=True)
+        wall_seconds = time.perf_counter() - benchmark_start
+        successful = [r for r in results if not r.get("error")]
+        prompt_tokens = sum(r.get("prompt_tokens", 0) for r in successful)
+        completion_tokens = sum(r.get("completion_tokens", 0) for r in successful)
+        summary = {
+            "mode": "base" if args.base else args.strategy,
+            "profiling": args.profile,
+            "concurrency": args.concurrency,
+            "expected_requests": len(rows),
+            "completed_requests": len(successful),
+            "failed_requests": len(results) - len(successful),
+            "wall_seconds": wall_seconds,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "requests_per_second": len(successful) / wall_seconds,
+            "input_tokens_per_second": prompt_tokens / wall_seconds,
+            "output_tokens_per_second": completion_tokens / wall_seconds,
+            "total_tokens_per_second": (prompt_tokens + completion_tokens) / wall_seconds,
+        }
+        dump(output / "summary.json", summary)
+        print("[summary] " + json.dumps(summary), flush=True)
     finally:
         try:
             if profiling and process.poll() is None:
