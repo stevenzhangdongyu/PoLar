@@ -243,11 +243,13 @@ def run(args):
         for key in ("model", "vllm_root", "gpu", "input_len", "output_len",
                     "requests", "warmups", "concurrency", "repeats", "seed",
                     "max_model_len", "max_num_batched_tokens", "max_num_seqs",
-                    "gpu_memory_utilization", "kv_cache_mode"):
+                    "gpu_memory_utilization", "kv_cache_mode", "loop_policy", "modes"):
             current = getattr(args, key)
             if isinstance(current, Path):
                 current = str(current)
-            old = previous.get(key, "execution" if key == "kv_cache_mode" else None)
+            defaults = {"kv_cache_mode": "execution", "loop_policy": "greedy",
+                        "modes": ["base", "serial", "identical_path", "dynamic_layer"]}
+            old = previous.get(key, defaults.get(key))
             if old != current:
                 raise ValueError(f"Resume configuration mismatch: {key}")
         rows = [json.loads(line) for line in
@@ -309,7 +311,7 @@ def run(args):
               "--seed", str(args.seed), "--dtype", "bfloat16"]
     summaries, references, checks = [], {}, []
     def record(summary, outputs, mode, repeat, concurrency):
-        summary.update(mode=mode, repeat=repeat)
+        summary.update(mode=mode, repeat=repeat, loop_policy=args.loop_policy)
         summaries.append(summary)
         family = "base" if mode == "base" else "mixed"
         if family not in references:
@@ -325,8 +327,9 @@ def run(args):
 
     for repeat in range(args.repeats):
         # Rotate policy order across repeats to reduce systematic ordering effects.
-        modes = ["base", "serial", "identical_path", "dynamic_layer"]
-        modes = modes[repeat % 4:] + modes[:repeat % 4]
+        modes = args.modes
+        offset = repeat % len(modes)
+        modes = modes[offset:] + modes[:offset]
         for mode in modes:
             directory = args.output / f"repeat_{repeat}" / mode
             directory.mkdir(parents=True, exist_ok=True)
@@ -364,6 +367,7 @@ def run(args):
             command = list(common)
             if mode != "base":
                 env.update(VLLM_POLAR_SCHEDULER=mode,
+                           VLLM_POLAR_LOOP_POLICY=args.loop_policy,
                            VLLM_POLAR_KV_CACHE_MODE=args.kv_cache_mode,
                            VLLM_POLAR_PATH_MANIFEST=str(args.output / "path_manifest.json"))
                 command += ["--hf-overrides", '{"architectures":["PolarQwen2ForCausalLM"]}']
@@ -445,6 +449,11 @@ def main():
     for name in ("vllm-root", "model", "paths", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--gpu", default="0")
+    parser.add_argument("--modes", nargs="+",
+                        choices=["base", "serial", "identical_path", "dynamic_layer"],
+                        default=["base", "serial", "identical_path", "dynamic_layer"])
+    parser.add_argument("--loop-policy", choices=["greedy", "immediate"],
+                        default="greedy")
     parser.add_argument("--kv-cache-mode", choices=["execution", "layer"],
                         default="execution")
     parser.add_argument("--resume", action="store_true",
@@ -463,6 +472,8 @@ def main():
     parser.add_argument("--max-num-seqs", type=int, default=256)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.9)
     args = parser.parse_args()
+    if len(set(args.modes)) != len(args.modes):
+        parser.error("Duplicate modes are not allowed")
     args.concurrency = [int(c) for c in args.concurrency.replace(",", " ").split()]
     if (not args.concurrency or min(args.concurrency) < 1
             or len(set(args.concurrency)) != len(args.concurrency)
